@@ -1,0 +1,32 @@
+{
+  "name": "food-health-analyzer-backend",
+  "version": "1.0.0",
+  "description": "Food Health Analyzer API - Phase 1",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test:scoring": "node scripts/test-scoring.js",
+    "test:image": "node scripts/generate-test-image.js",
+    "debug:ocr": "node scripts/debug-ocr.js",
+    "ingest:knowledge": "node scripts/ingestKnowledge.js",
+    "check:knowledge": "node scripts/ingestKnowledge.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@langchain/core": "^0.3.42",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "helmet": "^8.0.0",
+    "mongoose": "^8.9.3",
+    "multer": "^1.4.5-lts.1",
+    "sharp": "^0.33.5",
+    "tesseract.js": "^5.1.1",
+    "uuid": "^11.0.3",
+    "zod": "^3.24.2"
+  }
+}
