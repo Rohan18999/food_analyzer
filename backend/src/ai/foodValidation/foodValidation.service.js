@@ -3,15 +3,13 @@ import config from '../../config/env.js';
 import { logger } from '../../utils/logger.js';
 
 const VISION_FALLBACKS = [
-  'meta-llama/llama-4-maverick-17b-128e-instruct',
-  'meta-llama/llama-4-scout-17b-16e-instruct',
-  'llama-3.2-90b-vision-preview',
+  'qwen/qwen3.6-27b',
+  'qwen/qwen3.8-27b',
 ];
 
 function getVisionModel() {
-  const m = config.groq.visionModel || 'meta-llama/llama-4-maverick-17b-128e-instruct';
-  if (m === 'qwen/qwen3.6-27b' || m === 'qwen/qwen3-32b' || m === 'qwen/qwen3.6-27b') return 'meta-llama/llama-4-maverick-17b-128e-instruct';
-  if (m === 'qwen/qwen3.6-27b') return 'meta-llama/llama-4-maverick-17b-128e-instruct';
+  const m = config.groq.visionModel || 'qwen/qwen3.6-27b';
+  if (m.includes('llama-4') || m.includes('llama-3.2')) return 'qwen/qwen3.6-27b';
   return m;
 }
 

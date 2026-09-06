@@ -4,14 +4,17 @@ import { logger } from '../../utils/logger.js';
 import { listFoodNames } from '../../data/nutritionDatabase.js';
 
 const VISION_FALLBACKS = [
-  'meta-llama/llama-4-maverick-17b-128e-instruct',
-  'meta-llama/llama-4-scout-17b-16e-instruct',
-  'llama-3.2-90b-vision-preview',
+  'qwen/qwen3.6-27b',
+  'qwen/qwen3.8-27b',
 ];
 
 function getVisionModel() {
-  const m = config.groq.visionModel || 'meta-llama/llama-4-maverick-17b-128e-instruct';
-  if (m === 'qwen/qwen3.6-27b' || m === 'qwen/qwen3-32b') return 'meta-llama/llama-4-maverick-17b-128e-instruct';
+  const m = config.groq.visionModel || 'qwen/qwen3.6-27b';
+  // Auto-correct retired llama vision models to qwen
+  if (m.includes('llama-4') || m.includes('llama-3.2') || m === 'qwen/qwen3.6-27b' || m === 'qwen/qwen3-32b') {
+    // Keep qwen as is, map llama to qwen
+    if (m.includes('llama')) return 'qwen/qwen3.6-27b';
+  }
   return m;
 }
 
@@ -160,7 +163,7 @@ Example: {"foods":[{"name":"Chicken Biryani","confidence":0.91},{"name":"Raita",
 
   // All models failed
   logger.error('Groq vision all models failed', { lastStatus, lastText: lastText.slice(0, 500), lastContent: lastContent?.slice(0, 200) });
-  if (lastStatus === 404) throw new Error(`Groq vision model "meta-llama/llama-4-scout-17b-16e-instruct" not found or retired — try GROQ_VISION_MODEL=meta-llama/llama-4-maverick-17b-128e-instruct or meta-llama/llama-4-scout-17b-16e-instruct`);
+  if (lastStatus === 404 || (lastStatus === 400 && lastText.includes('decommissioned'))) throw new Error(`Groq vision model not found or retired (tried ${getVisionCandidates().join(', ')}) — set GROQ_VISION_MODEL=qwen/qwen3.6-27b (see https://console.groq.com/docs/deprecations)`);
   if (lastStatus === 401) throw new Error('Groq API key invalid or missing — set GROQ_API_KEY in backend/.env');
   throw new Error(`Vision request failed: ${lastStatus} ${lastText.slice(0, 300)}`);
 }
