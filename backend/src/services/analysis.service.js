@@ -79,7 +79,7 @@ export async function analyzeProductImage(imagePath) {
     let ragFallback = false;
     let ragError = null;
     try {
-      // Timeout after 7s — ensures fast fallback if Groq is slow (Render free tier)
+      // Tightened to 5s (was 7s) — deterministic fallback is high-quality, so fail faster
       const ragPromise = runRagAnalysis({
         product: productPayload,
         healthScore: scoringResult.healthScore,
@@ -87,7 +87,7 @@ export async function analyzeProductImage(imagePath) {
         scoreBreakdown: scoringResult.scoreBreakdown,
       });
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('AI insights timed out after 7s — using fast fallback')), 7000)
+        setTimeout(() => reject(new Error('AI insights timed out after 5s — using fast fallback')), 5000)
       );
       ragResult = await Promise.race([ragPromise, timeoutPromise]);
       ragDurationMs = Date.now() - ragStart;
@@ -109,39 +109,53 @@ export async function analyzeProductImage(imagePath) {
       });
     }
 
-    const product = await createProduct({
-      ...productPayload,
-      imagePath,
-      ocrRawText: extracted.ocrRawText,
-      extractionConfidence: extracted.extractionConfidence,
-    });
-
     const totalDurationMs = Date.now() - pipelineStart;
 
-    const analysisRecord = await createAnalysis({
-      productId: product?._id || null,
-      version: "v2",
-      healthScore: scoringResult.healthScore,
-      verdict: scoringResult.verdict,
-      scoreBreakdown: scoringResult.scoreBreakdown,
-      llmOutput: ragResult.llmOutput,
-      retrievedSources: ragResult.retrievedSources,
-      ragContext: {
-        searchQuery: ragResult.searchQuery,
-        retrievedDocIds: ragResult.retrievedDocIds,
-      },
-      extractedData: extracted,
-      processingMetrics: {
-        ocrDurationMs: ocrResult.durationMs,
-        scoringDurationMs,
-        ragDurationMs,
-        totalDurationMs,
-      },
-      status: "completed",
-    });
+    // DB writes are persisted async (non-blocking) — saves 300-800ms on Atlas cold connection.
+    // Response returns immediately; persistence happens in background.
+    let productId = null;
+    let analysisId = null;
+    const persistPromise = (async () => {
+      try {
+        const product = await createProduct({
+          ...productPayload,
+          imagePath,
+          ocrRawText: extracted.ocrRawText,
+          extractionConfidence: extracted.extractionConfidence,
+        });
+        productId = product?._id?.toString() || null;
+        const analysisRecord = await createAnalysis({
+          productId: product?._id || null,
+          version: "v2",
+          healthScore: scoringResult.healthScore,
+          verdict: scoringResult.verdict,
+          scoreBreakdown: scoringResult.scoreBreakdown,
+          llmOutput: ragResult.llmOutput,
+          retrievedSources: ragResult.retrievedSources,
+          ragContext: {
+            searchQuery: ragResult.searchQuery,
+            retrievedDocIds: ragResult.retrievedDocIds,
+          },
+          extractedData: extracted,
+          processingMetrics: {
+            ocrDurationMs: ocrResult.durationMs,
+            scoringDurationMs,
+            ragDurationMs,
+            totalDurationMs,
+          },
+          status: "completed",
+        });
+        analysisId = analysisRecord?._id?.toString() || null;
+        logger.info("Analysis persisted", { analysisId, productId });
+      } catch (e) {
+        logger.warn("Background persist failed (non-critical)", { error: e.message });
+      }
+    })();
+    // Don't block response on DB; only wait up to 400ms then return anyway
+    await Promise.race([persistPromise, new Promise((r) => setTimeout(r, 400))]);
 
     const response = {
-      analysisId: analysisRecord?._id?.toString() || null,
+      analysisId,
       product: productPayload,
       healthScore: scoringResult.healthScore,
       verdict: scoringResult.verdict,
@@ -163,6 +177,7 @@ export async function analyzeProductImage(imagePath) {
       healthScore: response.healthScore,
       verdict: response.verdict,
       fallback: ragFallback,
+      totalDurationMs,
     });
 
     return response;

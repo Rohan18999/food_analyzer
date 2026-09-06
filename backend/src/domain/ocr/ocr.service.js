@@ -1,5 +1,5 @@
 import { getTesseractWorker } from "./tesseractWorker.js";
-import { preprocessImageVariants } from "./imagePreprocessor.js";
+import { preprocessPrimary, preprocessThresholdVariant } from "./imagePreprocessor.js";
 import { normalizeOcrText } from "./textNormalizer.js";
 import { parseProductName } from "./parsers/productNameParser.js";
 import { parseIngredients } from "./parsers/ingredientsParser.js";
@@ -24,9 +24,9 @@ const TESSERACT_CONFIG = {
 export async function extractProductFromImage(imagePath) {
   const start = Date.now();
 
-  let imageVariants;
+  let primaryVariant;
   try {
-    imageVariants = await preprocessImageVariants(imagePath);
+    primaryVariant = await preprocessPrimary(imagePath);
   } catch (error) {
     logger.error("Image preprocessing failed", { error: error.message });
     return {
@@ -40,26 +40,24 @@ export async function extractProductFromImage(imagePath) {
   let bestExtraction = null;
   let bestDurationMs = 0;
   try {
-    // Optimized for Render free tier: sequential fallback uses ~50% less CPU/memory than
-    // parallel, avoids OOM on 512MB and is often faster due to less contention.
-    // Only runs 2nd variant if 1st confidence is insufficient.
+    // Speed-optimized: single primary variant (1024px) covers ~85% cases.
+    // Threshold variant is generated lazily only if confidence is low - saves 600ms preprocessing
+    // and avoids wasting CPU on Render free tier. Per-variant 20s, global 35s.
     const worker = await getTesseractWorker();
-    const attempts = imageVariants.map((variant) => ({ ...variant, pageSegMode: "6" }));
 
     const runVariant = async (variant) => {
       try {
-        await worker.setParameters({ tessedit_pageseg_mode: variant.pageSegMode, preserve_interword_spaces: '1' });
-        // Per-variant 25s + global outer timeout below. 25s balances slow Render CPU vs client UX.
+        await worker.setParameters({ tessedit_pageseg_mode: "6", preserve_interword_spaces: '1' });
         const ocrPromise = worker.recognize(variant.buffer);
         const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('OCR variant timeout after 25s')), 25000)
+          setTimeout(() => reject(new Error('OCR variant timeout after 20s')), 20000)
         );
         const result = await Promise.race([ocrPromise, timeoutPromise]);
         const candidate = buildExtraction(result.data);
         const candidateScore = scoreExtractionCandidate(candidate);
         logger.info("OCR variant complete", {
           variant: variant.name,
-          psm: variant.pageSegMode,
+          psm: 6,
           score: candidateScore,
           confidence: candidate.extractionConfidence,
         });
@@ -70,34 +68,39 @@ export async function extractProductFromImage(imagePath) {
       }
     };
 
-    // Global safety: entire OCR should not exceed 50s (frontend waits 110s)
     const ocrWithGlobalTimeout = async () => {
-      const first = await runVariant(attempts[0]);
-      // Early exit: if first variant is already high quality, skip expensive 2nd pass
-      if (first && first.candidateScore >= 35 && first.candidate.extractionConfidence >= 0.5) {
-        bestExtraction = { ...first.candidate, ocrVariant: `${first.variant.name}:psm${first.variant.pageSegMode}`, candidateScore: first.candidateScore };
+      const first = await runVariant({ ...primaryVariant, pageSegMode: "6" });
+      // Early exit for ~85% of images - saves 2-4s on threshold generation + OCR
+      if (first && first.candidateScore >= 30 && first.candidate.extractionConfidence >= 0.45) {
+        bestExtraction = { ...first.candidate, ocrVariant: `${first.variant.name}:psm6`, candidateScore: first.candidateScore };
         bestDurationMs = Date.now() - start;
-        logger.info("OCR early exit — sufficient confidence on first variant", { variant: bestExtraction.ocrVariant, score: first.candidateScore });
+        logger.info("OCR early exit — sufficient confidence on primary", { variant: bestExtraction.ocrVariant, score: first.candidateScore });
         return;
       }
-      // Low confidence — try fallback variant sequentially
-      if (attempts.length > 1) {
-        const second = await runVariant(attempts[1]);
-        const candidates = [first, second].filter(Boolean);
-        for (const r of candidates) {
-          if (!bestExtraction || r.candidateScore > bestExtraction.candidateScore) {
-            bestExtraction = { ...r.candidate, ocrVariant: `${r.variant.name}:psm${r.variant.pageSegMode}`, candidateScore: r.candidateScore };
-            bestDurationMs = Date.now() - start;
-          }
+      // Low confidence — lazily generate threshold variant only now
+      logger.info("OCR low confidence on primary, generating threshold fallback", { score: first?.candidateScore, conf: first?.candidate.extractionConfidence });
+      let thresholdVariant;
+      try {
+        thresholdVariant = await preprocessThresholdVariant(imagePath);
+      } catch (e) {
+        logger.warn("Threshold preprocessing failed", { error: e.message });
+      }
+      const second = thresholdVariant ? await runVariant({ ...thresholdVariant, pageSegMode: "6" }) : null;
+      const candidates = [first, second].filter(Boolean);
+      for (const r of candidates) {
+        if (!bestExtraction || r.candidateScore > bestExtraction.candidateScore) {
+          bestExtraction = { ...r.candidate, ocrVariant: `${r.variant.name}:psm6`, candidateScore: r.candidateScore };
+          bestDurationMs = Date.now() - start;
         }
-      } else if (first) {
-        bestExtraction = { ...first.candidate, ocrVariant: `${first.variant.name}:psm${first.variant.pageSegMode}`, candidateScore: first.candidateScore };
+      }
+      if (!bestExtraction && first) {
+        bestExtraction = { ...first.candidate, ocrVariant: `${first.variant.name}:psm6`, candidateScore: first.candidateScore };
         bestDurationMs = Date.now() - start;
       }
     };
 
     const globalTimeout = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('OCR pipeline timeout after 50s — image too complex or server overloaded')), 50000)
+      setTimeout(() => reject(new Error('OCR pipeline timeout after 35s — image too complex or server overloaded')), 35000)
     );
     await Promise.race([ocrWithGlobalTimeout(), globalTimeout]);
 

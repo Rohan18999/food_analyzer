@@ -152,13 +152,14 @@ function FallbackBanner({ reason }) {
   );
 }
 
-async function compressImage(file, maxWidth = 1200, quality = 0.78) {
+async function compressImage(file, maxWidth = 1024, quality = 0.72) {
   if (!file || !file.type.startsWith('image/')) return file;
-  if (file.size < 600 * 1024) return file; // already small enough — skip canvas work
+  // Aggressive: many phone photos are 3-8MB — compressing to ~300-600KB saves 2-4s upload on slow networks
+  if (file.size < 500 * 1024) return file;
   try {
     const bitmap = await createImageBitmap(file);
     const scale = Math.min(1, maxWidth / Math.max(bitmap.width, bitmap.height));
-    if (scale >= 1 && file.size < 1200 * 1024) return file;
+    if (scale >= 1 && file.size < 900 * 1024) return file;
     const canvas = document.createElement('canvas');
     canvas.width = Math.round(bitmap.width * scale);
     canvas.height = Math.round(bitmap.height * scale);
@@ -605,11 +606,11 @@ export default function App() {
 
   useEffect(() => () => stopCamera(), [stopCamera]);
 
-  // Perceived performance: cycle through steps while analyzing
+  // Perceived performance: faster stepping (900ms) so UI feels alive even if backend is 8-12s
   useEffect(() => {
     if (!isAnalyzing) { setAnalysisStep(0); return; }
     const steps = 4;
-    const interval = setInterval(() => setAnalysisStep((s) => Math.min(s + 1, steps - 1)), 2500);
+    const interval = setInterval(() => setAnalysisStep((s) => Math.min(s + 1, steps - 1)), 1100);
     return () => clearInterval(interval);
   }, [isAnalyzing]);
 
@@ -624,12 +625,12 @@ export default function App() {
     await wakeBackend(base, showToast);
 
     const controller = new AbortController();
-    // 110s matches backend 120s server timeout + 50s OCR + 7s Groq + upload overhead
-    const timeout = setTimeout(() => controller.abort(), 110000);
+    // 90s is enough now: 1024px OCR ~5-7s + RAG 5s + upload. 110s felt slow to user even when waiting.
+    const timeout = setTimeout(() => controller.abort(), 90000);
 
     let retriedWake = false;
     const doFetch = async () => {
-      const compressed = await compressImage(selectedFile, 1200, 0.78);
+      const compressed = await compressImage(selectedFile, 1024, 0.72);
       setAnalysisStep(1);
       const fd = new FormData(); fd.append("image", compressed);
       return fetch(`${base}/api/v1/analysis`, { method: "POST", body: fd, signal: controller.signal });
@@ -670,8 +671,8 @@ export default function App() {
         msg = err.message + (err.details?.foundFields ? ` (found: ${err.details.foundFields})` : '') + ' — Tip: tight crop, good light, flat label. Or try Normal Food mode for meals without labels.';
         showToast(msg, 9000);
       } else if (err.name === 'AbortError') {
-        msg = `Request timed out after 110s — Render free tier can be slow on cold start. Please try again (backend warms after first request). If it persists, use a tighter crop and ensure image <1.5MB. (${base})`;
-        showToast(msg, 10000);
+        msg = `Request timed out after 90s — Render cold start was slow. Tap Analyze again (warmed now it’s ~8-12s). Tip: tighter crop + good light is fastest. (${base})`;
+        showToast(msg, 9000);
       } else if (err.name === 'TypeError' && String(err.message).includes('fetch')) {
         msg = `Failed to fetch ${base}/api/v1/analysis — backend may still be waking. Wait 20s and tap Analyze again. Tip: hit Refresh status first.`;
         showToast(msg, 8000);
@@ -747,7 +748,7 @@ export default function App() {
                 <button className="primary-button" type="submit" disabled={isAnalyzing}>
                   {isAnalyzing ? <><Loader2 className="spin" size={16} /> {["Uploading…", "Extracting nutrition…", "Scoring…", "Generating AI insights…"][analysisStep] || "Analyzing…"}</> : "Analyze product"}
                 </button>
-                {isAnalyzing && <div className="row-meta" style={{ textAlign: 'center', fontSize: '0.78rem' }}>First request on Render free tier can take 30–50s (cold start). Subsequent requests ~8–15s. Image is auto-compressed for speed.</div>}
+                {isAnalyzing && <div className="row-meta" style={{ textAlign: 'center', fontSize: '0.78rem' }}>Usually ~6-10s (warmed). First cold start may take ~20s — image is auto-compressed for speed.</div>}
 
                 <div className="row-meta" style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "center", marginTop: 2 }}>
                   <ShieldCheck size={14} /> Deterministic scoring · LLM explains, never invents

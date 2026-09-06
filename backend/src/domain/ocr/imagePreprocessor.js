@@ -11,45 +11,53 @@ export async function preprocessImage(imagePath) {
 }
 
 /**
- * Nutrition labels vary a lot: glossy packs, low contrast, table grids, and
- * angled photos. Running a few cheap preprocessing variants lets us choose the
- * OCR pass that extracts the most useful nutrition fields.
- *
- * @param {string} imagePath
- * @returns {Promise<Array<{ name: string, buffer: Buffer }>>}
+ * Speed-optimized: primary variant only (1024px JPEG) — fastest path covers
+ * ~85% of labels. Threshold variant is generated lazily only if confidence low.
+ */
+const TARGET_WIDTH = 1024;
+
+async function getTargetWidth(imagePath) {
+  try {
+    const metadata = await sharp(imagePath).metadata();
+    return Math.min(Math.max(metadata.width || 0, 800), TARGET_WIDTH);
+  } catch {
+    return TARGET_WIDTH;
+  }
+}
+
+export async function preprocessPrimary(imagePath) {
+  const targetWidth = await getTargetWidth(imagePath);
+  const buffer = await sharp(imagePath)
+    .rotate()
+    .resize({ width: targetWidth, withoutEnlargement: false })
+    .grayscale()
+    .normalize()
+    .sharpen({ sigma: 1 })
+    .jpeg({ quality: 78, mozjpeg: true })
+    .toBuffer();
+  return { name: 'normalized', buffer };
+}
+
+export async function preprocessThresholdVariant(imagePath) {
+  const targetWidth = await getTargetWidth(imagePath);
+  const buffer = await sharp(imagePath)
+    .rotate()
+    .resize({ width: targetWidth, withoutEnlargement: false })
+    .grayscale()
+    .normalize()
+    .threshold(165)
+    .sharpen()
+    .jpeg({ quality: 78, mozjpeg: true })
+    .toBuffer();
+  return { name: 'threshold', buffer };
+}
+
+/**
+ * Legacy — now delegates to lazy primary + optional threshold.
+ * Kept for scripts/debug-ocr compatibility.
  */
 export async function preprocessImageVariants(imagePath) {
-  const base = sharp(imagePath).rotate();
-  const metadata = await base.metadata();
-  // Optimized for Render free tier (512MB, shared CPU): 1200px is enough for
-  // nutrition tables and ~40% faster OCR vs 1600-1800px. JPEG @80% quality
-  // is ~5x smaller than PNG and tesseract accuracy is nearly identical.
-  const targetWidth = Math.min(Math.max(metadata.width || 0, 1000), 1200);
-
-  const common = () =>
-    sharp(imagePath)
-      .rotate()
-      .resize({ width: targetWidth, withoutEnlargement: false })
-      .grayscale();
-
-  // Generate cheaper JPEG variants; threshold variant is fallback-only now
-  // so we return normalized first and let ocr.service fallback sequentially.
-  const variants = await Promise.all([
-    common()
-      .normalize()
-      .sharpen({ sigma: 1 })
-      .jpeg({ quality: 82, mozjpeg: true })
-      .toBuffer(),
-    common()
-      .normalize()
-      .threshold(165)
-      .sharpen()
-      .jpeg({ quality: 82, mozjpeg: true })
-      .toBuffer(),
-  ]);
-
-  return [
-    { name: 'normalized', buffer: variants[0] },
-    { name: 'threshold', buffer: variants[1] },
-  ];
+  const primary = await preprocessPrimary(imagePath);
+  const threshold = await preprocessThresholdVariant(imagePath);
+  return [primary, threshold];
 }

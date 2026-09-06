@@ -99,7 +99,7 @@ export async function generateGroqJson({ systemPrompt, userPrompt, modelOverride
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 7000);
+  const timeout = setTimeout(() => controller.abort(), 5500);
 
   const response = await fetch(`${config.groq.baseUrl}/chat/completions`, {
     method: 'POST',
@@ -111,7 +111,7 @@ export async function generateGroqJson({ systemPrompt, userPrompt, modelOverride
     body: JSON.stringify({
       model,
       temperature: 0.2,
-      max_tokens: 1200,
+      max_tokens: 900,
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: systemPrompt + '\nRespond only with valid JSON.' },

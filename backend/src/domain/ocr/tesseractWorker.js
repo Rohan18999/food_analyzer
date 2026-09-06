@@ -54,13 +54,21 @@ export async function getTesseractWorker() {
 export async function warmupTesseract() {
   try {
     const worker = await getTesseractWorker();
-    // Tiny no-op recognize to fully initialize WASM (avoids 3-5s on first real request)
-    // Use 1x1 white jpeg if available, otherwise skip warmup recognize
-    logger.info('Tesseract warmup complete');
+    // Real dummy recognize to JIT-compile WASM — saves 2-3s on first real image (critical for perceived speed)
+    try {
+      const dummyPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAADIAAAAyCAIAAACRXR/mAAAAKElEQVR4nO3BAQ0AAADCoPdPbQ8HFAAAAAAAAAAAAAAAAAD4GStIAAHVwHTDAAAAAElFTkSuQmCC';
+      const dummy = Buffer.from(dummyPngBase64, 'base64');
+      await Promise.race([
+        worker.recognize(dummy),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('warmup dummy timeout')), 4000)),
+      ]);
+      logger.info('Tesseract warmup complete (dummy recognize done)');
+    } catch (e) {
+      logger.info('Tesseract warmup complete (worker ready, dummy skipped)', { note: e.message });
+    }
     return worker;
   } catch (e) {
     logger.warn('Tesseract warmup failed — will lazy-init on first request', { error: e.message });
-    // Reset so next call retries
     workerPromise = null;
     workerReady = false;
     return null;
