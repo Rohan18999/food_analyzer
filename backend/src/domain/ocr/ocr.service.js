@@ -108,12 +108,17 @@ export async function extractProductFromImage(imagePath) {
       throw new Error('All OCR variants failed or timed out');
     }
   } catch (error) {
-    logger.error("OCR failed", { error: error.message });
+    logger.error("OCR failed", { error: error.message, stack: error.stack?.slice(0, 500) });
+    const isInitTimeout = error.message.includes('init timeout') || error.message.includes('All OCR variants failed');
+    const hint = isInitTimeout
+      ? "OCR worker timed out — Render free tier CPU is slow. Please retry; worker warms after first hit. If persistent, check Render logs for OOM or that backend/eng.traineddata is deployed."
+      : error.message.includes('download') || error.message.includes('fetch')
+        ? "OCR language data download failed — ensure backend/eng.traineddata is committed and deployed (check Render file list). Retrying will use fallback."
+        : error.message;
     return {
       success: false,
       error: "OCR_FAILED",
-      message:
-        "OCR engine failed. Ensure network access on first run to download language data.",
+      message: `OCR engine failed: ${hint}`,
       durationMs: Date.now() - start,
     };
   }
