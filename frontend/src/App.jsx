@@ -152,13 +152,13 @@ function FallbackBanner({ reason }) {
   );
 }
 
-async function compressImage(file, maxWidth = 1600, quality = 0.85) {
+async function compressImage(file, maxWidth = 1200, quality = 0.78) {
   if (!file || !file.type.startsWith('image/')) return file;
-  if (file.size < 800 * 1024) return file; // already small
+  if (file.size < 600 * 1024) return file; // already small enough — skip canvas work
   try {
     const bitmap = await createImageBitmap(file);
     const scale = Math.min(1, maxWidth / Math.max(bitmap.width, bitmap.height));
-    if (scale >= 1) return file;
+    if (scale >= 1 && file.size < 1200 * 1024) return file;
     const canvas = document.createElement('canvas');
     canvas.width = Math.round(bitmap.width * scale);
     canvas.height = Math.round(bitmap.height * scale);
@@ -170,6 +170,28 @@ async function compressImage(file, maxWidth = 1600, quality = 0.85) {
   } catch {
     return file;
   }
+}
+
+// Render free tier sleeps after ~15min idle — first request can take 30-50s to wake.
+// Ping /health/ready with short timeout before the heavy POST so we can show
+// a helpful "waking up" message instead of a generic timeout.
+async function wakeBackend(base, showToast) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 8000);
+      const r = await fetch(`${base}/api/v1/health/ready`, { signal: ctrl.signal });
+      clearTimeout(t);
+      if (r.ok) return true;
+    } catch {
+      // backend still waking — retry once
+    }
+    if (attempt === 0) {
+      showToast('Waking up backend (Render free tier sleeps after 15 min idle) — this can take 30–50s on first request, please keep tab open…', 8000);
+      await new Promise((res) => setTimeout(res, 3500));
+    }
+  }
+  return false; // proceed anyway — POST may still succeed or will surface cold-start error
 }
 
 function ResultPanel({ result }) {
@@ -328,10 +350,12 @@ function NormalFoodFlow({ apiBaseUrl, showToast }) {
     if (!selectedFile) { showToast("Select a meal photo first."); return; }
     setIsRecognizing(true);
     const base = cleanBaseUrl(apiBaseUrl);
+    await wakeBackend(base, showToast);
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 60000);
+    const timeout = setTimeout(() => controller.abort(), 90000);
     try {
-      const fd = new FormData(); fd.append("image", selectedFile);
+      const compressed = await compressImage(selectedFile, 1200, 0.78);
+      const fd = new FormData(); fd.append("image", compressed);
       const res = await fetch(`${base}/api/v1/food/recognize`, { method: "POST", body: fd, signal: controller.signal });
       clearTimeout(timeout);
       const payload = await res.json().catch(() => ({}));
@@ -344,9 +368,9 @@ function NormalFoodFlow({ apiBaseUrl, showToast }) {
     } catch (e) {
       clearTimeout(timeout);
       let msg = e.message;
-      if (e.name === 'AbortError') msg = `Recognition timed out after 60s — try a smaller image or retry.`;
-      else if (e.name === 'TypeError' && String(e.message).includes('fetch')) msg = `Failed to fetch ${base}/api/v1/food/recognize — backend may be sleeping. Wait 30s and retry.`;
-      showToast(msg);
+      if (e.name === 'AbortError') msg = `Recognition timed out after 90s — Render cold start can be slow, please retry (backend warms after first hit).`;
+      else if (e.name === 'TypeError' && String(e.message).includes('fetch')) msg = `Failed to fetch ${base}/api/v1/food/recognize — backend may be sleeping. Wait 20s, hit Refresh status, and retry.`;
+      showToast(msg, 8000);
     } finally { setIsRecognizing(false); }
   };
 
@@ -371,8 +395,9 @@ function NormalFoodFlow({ apiBaseUrl, showToast }) {
     if (!foods.length) { showToast("Add at least one food item."); return; }
     setIsAnalyzing(true);
     const base = cleanBaseUrl(apiBaseUrl);
+    await wakeBackend(base, showToast);
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 45000);
+    const timeout = setTimeout(() => controller.abort(), 70000);
     try {
       const res = await fetch(`${base}/api/v1/food/analyze`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ foods }), signal: controller.signal,
@@ -384,9 +409,9 @@ function NormalFoodFlow({ apiBaseUrl, showToast }) {
     } catch (err) {
       clearTimeout(timeout);
       let msg = err.message;
-      if (err.name === 'AbortError') msg = `Analysis timed out after 45s — please retry.`;
-      else if (err.name === 'TypeError' && String(err.message).includes('fetch')) msg = `Failed to fetch ${base}/api/v1/food/analyze — backend may be sleeping. Try again.`;
-      showToast(msg);
+      if (err.name === 'AbortError') msg = `Analysis timed out after 70s — Render free tier can be slow on cold start, please retry.`;
+      else if (err.name === 'TypeError' && String(err.message).includes('fetch')) msg = `Failed to fetch ${base}/api/v1/food/analyze — backend may be sleeping. Wait 20s and retry.`;
+      showToast(msg, 8000);
     } finally { setIsAnalyzing(false); }
   };
 
@@ -527,13 +552,16 @@ export default function App() {
     for (const base of uniq) {
       try {
         const controller = new AbortController();
-        const t = setTimeout(() => controller.abort(), 4000);
+        // 12s for Render cold start wake (was 4s — too short, always marked Offline)
+        const t = setTimeout(() => controller.abort(), 12000);
         const r = await fetch(`${base}/api/v1/health/ready`, { signal: controller.signal });
         clearTimeout(t);
         if (!r.ok) continue;
         const payload = await r.json();
         const groqReady = payload?.services?.groq === "configured";
-        setBackendStatus({ status: groqReady ? "ready" : "error", label: groqReady ? "Ready" : "No Groq key" });
+        const ocrState = payload?.services?.ocr;
+        const label = ocrState === 'warming' ? 'Warming…' : groqReady ? "Ready" : "No Groq key";
+        setBackendStatus({ status: groqReady ? "ready" : "error", label });
         setResolvedApiUrl(base);
         // if discovered URL differs from configured, remember it
         if (base !== cleanBaseUrl(apiBaseUrl)) setApiBaseUrl(base);
@@ -542,7 +570,7 @@ export default function App() {
         // continue to next candidate
       }
     }
-    setBackendStatus({ status: "error", label: "Offline" });
+    setBackendStatus({ status: "error", label: "Offline — tap ↻ to wake Render" });
   }, [apiBaseUrl]);
 
   const handleFile = useCallback((file) => {
@@ -591,14 +619,39 @@ export default function App() {
     setIsAnalyzing(true);
     setAnalysisStep(0);
     const base = cleanBaseUrl(resolvedApiUrl || apiBaseUrl);
+
+    // Proactively wake Render if it slept — gives better UX than 75s silent timeout
+    await wakeBackend(base, showToast);
+
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 75000);
-    try {
-      // Compress on client to speed up upload + OCR on Render
-      const compressed = await compressImage(selectedFile, 1400, 0.82);
+    // 110s matches backend 120s server timeout + 50s OCR + 7s Groq + upload overhead
+    const timeout = setTimeout(() => controller.abort(), 110000);
+
+    let retriedWake = false;
+    const doFetch = async () => {
+      const compressed = await compressImage(selectedFile, 1200, 0.78);
       setAnalysisStep(1);
       const fd = new FormData(); fd.append("image", compressed);
-      const r = await fetch(`${base}/api/v1/analysis`, { method: "POST", body: fd, signal: controller.signal });
+      return fetch(`${base}/api/v1/analysis`, { method: "POST", body: fd, signal: controller.signal });
+    };
+
+    try {
+      let r;
+      try {
+        r = await doFetch();
+      } catch (fetchErr) {
+        // Cold-start network failure — retry once after brief pause (Render often wakes on 2nd hit)
+        if (!retriedWake && fetchErr.name === 'TypeError' && String(fetchErr.message).includes('fetch')) {
+          retriedWake = true;
+          showToast('Backend was waking up — retrying automatically…', 7000);
+          await new Promise((res) => setTimeout(res, 4000));
+          // re-wake then retry POST
+          await wakeBackend(base, showToast);
+          r = await doFetch();
+        } else {
+          throw fetchErr;
+        }
+      }
       clearTimeout(timeout);
       setAnalysisStep(3);
       const p = await r.json().catch(() => ({}));
@@ -617,11 +670,11 @@ export default function App() {
         msg = err.message + (err.details?.foundFields ? ` (found: ${err.details.foundFields})` : '') + ' — Tip: tight crop, good light, flat label. Or try Normal Food mode for meals without labels.';
         showToast(msg, 9000);
       } else if (err.name === 'AbortError') {
-        msg = `Request timed out after 75s — try a smaller, tighter crop (Render free tier is slow). (${base})`;
-        showToast(msg);
+        msg = `Request timed out after 110s — Render free tier can be slow on cold start. Please try again (backend warms after first request). If it persists, use a tighter crop and ensure image <1.5MB. (${base})`;
+        showToast(msg, 10000);
       } else if (err.name === 'TypeError' && String(err.message).includes('fetch')) {
-        msg = `Failed to fetch ${base}/api/v1/analysis — backend may be sleeping. Wait 30s and retry.`;
-        showToast(msg);
+        msg = `Failed to fetch ${base}/api/v1/analysis — backend may still be waking. Wait 20s and tap Analyze again. Tip: hit Refresh status first.`;
+        showToast(msg, 8000);
       } else {
         showToast(msg);
       }
@@ -694,7 +747,7 @@ export default function App() {
                 <button className="primary-button" type="submit" disabled={isAnalyzing}>
                   {isAnalyzing ? <><Loader2 className="spin" size={16} /> {["Uploading…", "Extracting nutrition…", "Scoring…", "Generating AI insights…"][analysisStep] || "Analyzing…"}</> : "Analyze product"}
                 </button>
-                {isAnalyzing && <div className="row-meta" style={{ textAlign: 'center', fontSize: '0.78rem' }}>This usually takes 3–7s locally, 8–15s on Render free tier. Image is compressed for speed.</div>}
+                {isAnalyzing && <div className="row-meta" style={{ textAlign: 'center', fontSize: '0.78rem' }}>First request on Render free tier can take 30–50s (cold start). Subsequent requests ~8–15s. Image is auto-compressed for speed.</div>}
 
                 <div className="row-meta" style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "center", marginTop: 2 }}>
                   <ShieldCheck size={14} /> Deterministic scoring · LLM explains, never invents

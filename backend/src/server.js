@@ -5,6 +5,7 @@ import config from './config/env.js';
 import routes from './routes/index.js';
 import { notFoundHandler, errorHandler } from './middleware/errorHandler.js';
 import { logger } from './utils/logger.js';
+import { warmupTesseract } from './domain/ocr/tesseractWorker.js';
 
 export function createApp() {
   const app = express();
@@ -47,7 +48,7 @@ export function createApp() {
   return app;
 }
 
-export function setServerTimeout(server, ms = 90000) {
+export function setServerTimeout(server, ms = 120000) {
   server.setTimeout(ms);
   server.headersTimeout = ms + 5000;
   server.requestTimeout = ms;
@@ -67,8 +68,12 @@ export function startServer(app) {
     if (!config.mongodbUri) {
       logger.warn('MONGODB_URI not set — RAG retrieval disabled, analyses will run without knowledge base');
     }
+    // Warm tesseract in background — avoids 5-15s cold-start penalty on first analysis request (critical for Render free tier)
+    setTimeout(() => {
+      warmupTesseract().catch(() => {});
+    }, 1500);
   });
-  setServerTimeout(server, 90000);
+  setServerTimeout(server, 120000);
 
   server.on('error', (error) => {
     if (error.code === 'EADDRINUSE') {
