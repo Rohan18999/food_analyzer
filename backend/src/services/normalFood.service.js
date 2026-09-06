@@ -126,7 +126,7 @@ export async function analyzeNormalFood({ foods, portion: globalPortion }) {
       userPrompt,
     });
     const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('AI insights timed out after 7s')), 7000)
+      setTimeout(() => reject(new Error('AI insights timed out after 12s')), 12000)
     );
     llmOutput = await Promise.race([groqPromise, timeoutPromise]);
     // mark used sources

@@ -79,7 +79,7 @@ export async function analyzeProductImage(imagePath) {
     let ragFallback = false;
     let ragError = null;
     try {
-      // Tightened to 5s (was 7s) — deterministic fallback is high-quality, so fail faster
+      // Allow up to 12s for Groq (now with internal retry up to 2×10s truncated handling)
       const ragPromise = runRagAnalysis({
         product: productPayload,
         healthScore: scoringResult.healthScore,
@@ -87,7 +87,7 @@ export async function analyzeProductImage(imagePath) {
         scoreBreakdown: scoringResult.scoreBreakdown,
       });
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('AI insights timed out after 5s — using fast fallback')), 5000)
+        setTimeout(() => reject(new Error('AI insights timed out after 12s — using fast fallback')), 12000)
       );
       ragResult = await Promise.race([ragPromise, timeoutPromise]);
       ragDurationMs = Date.now() - ragStart;
