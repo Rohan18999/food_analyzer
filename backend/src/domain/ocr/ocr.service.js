@@ -40,17 +40,19 @@ export async function extractProductFromImage(imagePath) {
   let bestExtraction = null;
   let bestDurationMs = 0;
   try {
-    // Speed-optimized: single primary variant (1024px) covers ~85% cases.
-    // Threshold variant is generated lazily only if confidence is low - saves 600ms preprocessing
-    // and avoids wasting CPU on Render free tier. Per-variant 20s, global 35s.
-    const worker = await getTesseractWorker();
+    // Render free tier is slow - allow more time per variant and globally.
+    // 900px primary covers ~85% cases; threshold fallback only if confidence low.
+    const worker = await Promise.race([
+      getTesseractWorker(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Tesseract worker init timeout after 30s — Render free tier is waking, please retry')), 30000)),
+    ]);
 
     const runVariant = async (variant) => {
       try {
         await worker.setParameters({ tessedit_pageseg_mode: "6", preserve_interword_spaces: '1' });
         const ocrPromise = worker.recognize(variant.buffer);
         const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('OCR variant timeout after 20s')), 20000)
+          setTimeout(() => reject(new Error('OCR variant timeout after 30s — image may be large, try tighter crop')), 30000)
         );
         const result = await Promise.race([ocrPromise, timeoutPromise]);
         const candidate = buildExtraction(result.data);
@@ -100,7 +102,7 @@ export async function extractProductFromImage(imagePath) {
     };
 
     const globalTimeout = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('OCR pipeline timeout after 35s — image too complex or server overloaded')), 35000)
+      setTimeout(() => reject(new Error('OCR pipeline timeout after 55s — image too complex or Render overloaded, try tighter crop')), 55000)
     );
     await Promise.race([ocrWithGlobalTimeout(), globalTimeout]);
 

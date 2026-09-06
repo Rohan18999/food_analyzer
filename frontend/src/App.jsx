@@ -152,14 +152,13 @@ function FallbackBanner({ reason }) {
   );
 }
 
-async function compressImage(file, maxWidth = 1024, quality = 0.72) {
+async function compressImage(file, maxWidth = 900, quality = 0.70) {
   if (!file || !file.type.startsWith('image/')) return file;
-  // Aggressive: many phone photos are 3-8MB — compressing to ~300-600KB saves 2-4s upload on slow networks
-  if (file.size < 500 * 1024) return file;
+  if (file.size < 400 * 1024) return file;
   try {
     const bitmap = await createImageBitmap(file);
     const scale = Math.min(1, maxWidth / Math.max(bitmap.width, bitmap.height));
-    if (scale >= 1 && file.size < 900 * 1024) return file;
+    if (scale >= 1 && file.size < 700 * 1024) return file;
     const canvas = document.createElement('canvas');
     canvas.width = Math.round(bitmap.width * scale);
     canvas.height = Math.round(bitmap.height * scale);
@@ -366,7 +365,7 @@ function NormalFoodFlow({ apiBaseUrl, showToast }) {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 90000);
       try {
-        const compressed = await compressImage(selectedFile, 1024, 0.72);
+        const compressed = await compressImage(selectedFile, 900, 0.70);
         const fd = new FormData(); fd.append("image", compressed);
         const res = await fetch(`${base}/api/v1/food/recognize`, { method: "POST", body: fd, signal: controller.signal, cache: 'no-store' });
         clearTimeout(timeout);
@@ -664,9 +663,9 @@ export default function App() {
 
     for (let attempt = 1; attempt <= 3; attempt++) {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 90000);
+      const timeout = setTimeout(() => controller.abort(), 110000);
       try {
-        const compressed = await compressImage(selectedFile, 1024, 0.72);
+        const compressed = await compressImage(selectedFile, 900, 0.70);
         setAnalysisStep(1);
         const fd = new FormData(); fd.append("image", compressed);
         const r = await fetch(`${base}/api/v1/analysis`, { method: "POST", body: fd, signal: controller.signal, cache: 'no-store' });
@@ -698,7 +697,7 @@ export default function App() {
           msg = err.message + (err.details?.foundFields ? ` (found: ${err.details.foundFields})` : '') + ' — Tip: tight crop, good light, flat label. Or try Normal Food mode for meals without labels.';
           showToast(msg, 9000);
         } else if (isAbort) {
-          msg = `Request timed out after 90s — Render cold start was slow. Tap Analyze again (warmed now it’s ~8-12s). Tip: tighter crop + good light is fastest. (${base})`;
+          msg = `Request timed out after 110s — Render free tier is slow. Try tighter crop (900px) + good light. Tap Analyze again — warmed request is ~10s. (${base})`;
           showToast(msg, 9000);
         } else if (isNet) {
           msg = `Failed to fetch ${base}/api/v1/analysis — backend still waking after ${attempt} tries. Hit Refresh status, wait 15s, retry.`;
