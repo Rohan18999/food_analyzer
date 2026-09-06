@@ -152,6 +152,26 @@ function FallbackBanner({ reason }) {
   );
 }
 
+async function compressImage(file, maxWidth = 1600, quality = 0.85) {
+  if (!file || !file.type.startsWith('image/')) return file;
+  if (file.size < 800 * 1024) return file; // already small
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, maxWidth / Math.max(bitmap.width, bitmap.height));
+    if (scale >= 1) return file;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', quality));
+    if (!blob) return file;
+    return new File([blob], file.name.replace(/\.\w+$/, '.jpg'), { type: 'image/jpeg' });
+  } catch {
+    return file;
+  }
+}
+
 function ResultPanel({ result }) {
   const score = Number(result.healthScore || 0);
   const facts = result.product?.nutritionFacts || result.nutritionFacts || {};
@@ -485,6 +505,7 @@ export default function App() {
   const [result, setResult] = useState(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisStep, setAnalysisStep] = useState(0);
   const [toast, setToast] = useState("");
   const [showCamera, setShowCamera] = useState(false);
   const [cameraStream, setCameraStream] = useState(null);
@@ -555,17 +576,31 @@ export default function App() {
   }, [handleFile, stopCamera]);
 
   useEffect(() => () => stopCamera(), [stopCamera]);
+
+  // Perceived performance: cycle through steps while analyzing
+  useEffect(() => {
+    if (!isAnalyzing) { setAnalysisStep(0); return; }
+    const steps = 4;
+    const interval = setInterval(() => setAnalysisStep((s) => Math.min(s + 1, steps - 1)), 2500);
+    return () => clearInterval(interval);
+  }, [isAnalyzing]);
+
   const submitAnalysis = async (e) => {
     e.preventDefault();
     if (!selectedFile) { showToast("Select a product image first."); return; }
     setIsAnalyzing(true);
+    setAnalysisStep(0);
     const base = cleanBaseUrl(resolvedApiUrl || apiBaseUrl);
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 90000);
+    const timeout = setTimeout(() => controller.abort(), 75000);
     try {
-      const fd = new FormData(); fd.append("image", selectedFile);
+      // Compress on client to speed up upload + OCR on Render
+      const compressed = await compressImage(selectedFile, 1400, 0.82);
+      setAnalysisStep(1);
+      const fd = new FormData(); fd.append("image", compressed);
       const r = await fetch(`${base}/api/v1/analysis`, { method: "POST", body: fd, signal: controller.signal });
       clearTimeout(timeout);
+      setAnalysisStep(3);
       const p = await r.json().catch(() => ({}));
       if (!r.ok || !p.success) {
         const err = new Error(p.error?.message || p.message || `Analysis failed ${r.status}`);
@@ -582,7 +617,7 @@ export default function App() {
         msg = err.message + (err.details?.foundFields ? ` (found: ${err.details.foundFields})` : '') + ' — Tip: tight crop, good light, flat label. Or try Normal Food mode for meals without labels.';
         showToast(msg, 9000);
       } else if (err.name === 'AbortError') {
-        msg = `Request timed out after 90s — Render free tier may be cold starting or image is large. Try a clearer, smaller crop and retry. (${base})`;
+        msg = `Request timed out after 75s — try a smaller, tighter crop (Render free tier is slow). (${base})`;
         showToast(msg);
       } else if (err.name === 'TypeError' && String(err.message).includes('fetch')) {
         msg = `Failed to fetch ${base}/api/v1/analysis — backend may be sleeping. Wait 30s and retry.`;
@@ -657,8 +692,9 @@ export default function App() {
                 </div>
 
                 <button className="primary-button" type="submit" disabled={isAnalyzing}>
-                  {isAnalyzing ? <><Loader2 className="spin" size={16} /> Analyzing…</> : "Analyze product"}
+                  {isAnalyzing ? <><Loader2 className="spin" size={16} /> {["Uploading…", "Extracting nutrition…", "Scoring…", "Generating AI insights…"][analysisStep] || "Analyzing…"}</> : "Analyze product"}
                 </button>
+                {isAnalyzing && <div className="row-meta" style={{ textAlign: 'center', fontSize: '0.78rem' }}>This usually takes 3–7s locally, 8–15s on Render free tier. Image is compressed for speed.</div>}
 
                 <div className="row-meta" style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "center", marginTop: 2 }}>
                   <ShieldCheck size={14} /> Deterministic scoring · LLM explains, never invents

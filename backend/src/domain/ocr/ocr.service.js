@@ -1,4 +1,4 @@
-import Tesseract from "tesseract.js";
+import { getTesseractWorker } from "./tesseractWorker.js";
 import { preprocessImageVariants } from "./imagePreprocessor.js";
 import { normalizeOcrText } from "./textNormalizer.js";
 import { parseProductName } from "./parsers/productNameParser.js";
@@ -40,64 +40,50 @@ export async function extractProductFromImage(imagePath) {
   let bestExtraction = null;
   let bestDurationMs = 0;
   try {
-    // Fast mode: only PSM 6 (Assumes uniform block of text) — most reliable for nutrition labels.
-    // Reduces from 6 attempts (3 variants × 2 PSM) to 2 attempts on Render free tier.
+    // Render free tier: parallel OCR with cached worker is ~2x faster than sequential Tesseract.recognize
+    const worker = await getTesseractWorker();
     const attempts = imageVariants.map((variant) => ({ ...variant, pageSegMode: "6" }));
 
-    for (const variant of attempts) {
+    // Run variants in parallel — early exit after best found
+    const runVariant = async (variant) => {
       try {
-        // Per-variant timeout — prevents hanging on Render free tier (512MB)
-        const ocrPromise = Tesseract.recognize(variant.buffer, "eng", {
-          ...TESSERACT_CONFIG,
-          tessedit_pageseg_mode: variant.pageSegMode,
-          logger: (m) => {
-            if (m.status === "recognizing text") {
-              logger.debug("OCR progress", {
-                variant: variant.name,
-                psm: variant.pageSegMode,
-                progress: m.progress,
-              });
-            }
-          },
-        });
+        await worker.setParameters({ tessedit_pageseg_mode: variant.pageSegMode, preserve_interword_spaces: '1' });
+        const ocrPromise = worker.recognize(variant.buffer);
         const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('OCR variant timeout after 25s')), 25000)
+          setTimeout(() => reject(new Error('OCR variant timeout after 20s')), 20000)
         );
         const result = await Promise.race([ocrPromise, timeoutPromise]);
-
         const candidate = buildExtraction(result.data);
         const candidateScore = scoreExtractionCandidate(candidate);
-
         logger.info("OCR variant complete", {
           variant: variant.name,
           psm: variant.pageSegMode,
           score: candidateScore,
           confidence: candidate.extractionConfidence,
         });
+        return { candidate, candidateScore, variant };
+      } catch (err) {
+        logger.warn("OCR variant failed", { variant: variant.name, error: err.message });
+        return null;
+      }
+    };
 
-        if (!bestExtraction || candidateScore > bestExtraction.candidateScore) {
-          bestExtraction = {
-            ...candidate,
-            ocrVariant: `${variant.name}:psm${variant.pageSegMode}`,
-            candidateScore,
-          };
+    // Try normalized first alone for early exit — fastest path
+    const first = await runVariant(attempts[0]);
+    if (first && first.candidateScore >= 45 && first.candidate.extractionConfidence >= 0.7) {
+      bestExtraction = { ...first.candidate, ocrVariant: `${first.variant.name}:psm${first.variant.pageSegMode}`, candidateScore: first.candidateScore };
+      bestDurationMs = Date.now() - start;
+      logger.info("OCR early exit — high confidence on first variant", { variant: bestExtraction.ocrVariant });
+    } else {
+      // Otherwise run remaining in parallel
+      const remaining = attempts.slice(first ? 1 : 0);
+      const results = await Promise.all(remaining.map(runVariant));
+      const all = [first, ...results].filter(Boolean);
+      for (const r of all) {
+        if (!bestExtraction || r.candidateScore > bestExtraction.candidateScore) {
+          bestExtraction = { ...r.candidate, ocrVariant: `${r.variant.name}:psm${r.variant.pageSegMode}`, candidateScore: r.candidateScore };
           bestDurationMs = Date.now() - start;
         }
-
-        // Early exit: if we already have high-quality extraction, skip remaining variants
-        if (bestExtraction.candidateScore >= 45 && bestExtraction.extractionConfidence >= 0.7) {
-          logger.info("OCR early exit — high confidence achieved", {
-            variant: bestExtraction.ocrVariant,
-            score: bestExtraction.candidateScore,
-          });
-          break;
-        }
-      } catch (variantError) {
-        logger.warn("OCR variant failed, continuing to next", {
-          variant: variant.name,
-          psm: variant.pageSegMode,
-          error: variantError.message,
-        });
       }
     }
 

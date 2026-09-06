@@ -3,6 +3,7 @@ import { MongoKeywordRetriever } from '../retrievers/mongoKeywordRetriever.js';
 import { buildSearchQuery, formatRetrievedContext } from '../queryBuilder.js';
 import { generateGroqJson } from '../clients/groqClient.js';
 import config from '../../config/env.js';
+import { isDatabaseConnected } from '../../config/database.js';
 
 /**
  * Run the full RAG pipeline:
@@ -10,8 +11,12 @@ import config from '../../config/env.js';
  */
 export async function runRagAnalysisChain({ product, healthScore, verdict, scoreBreakdown }) {
   const searchQuery = buildSearchQuery(product);
-  const retriever = new MongoKeywordRetriever({ topK: config.rag.topK });
-  const retrievedDocs = await retriever.invoke(searchQuery);
+  let retrievedDocs = [];
+  // Skip DB retrieval when Mongo not configured — saves ~200ms on Render free tier
+  if (isDatabaseConnected()) {
+    const retriever = new MongoKeywordRetriever({ topK: config.rag.topK });
+    retrievedDocs = await retriever.invoke(searchQuery);
+  }
 
   const retrievedContext = formatRetrievedContext(
     retrievedDocs.map((doc) => ({

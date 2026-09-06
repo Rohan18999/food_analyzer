@@ -79,15 +79,18 @@ export async function analyzeNormalFood({ foods, portion: globalPortion }) {
     searchQuery = buildSearchQuery(productForRag);
     // Also append food names for better keyword hit
     searchQuery += ' ' + summaries.map(s => s.foodName).join(' ');
-    const retriever = new MongoKeywordRetriever({ topK: config.rag.topK });
-    retrievedDocs = await retriever.invoke(searchQuery);
-    retrievedSources = retrievedDocs.map((doc) => ({
-      title: doc.metadata.title,
-      category: doc.metadata.category,
-      excerpt: doc.pageContent.slice(0, 250),
-      relevanceScore: doc.metadata.score ?? null,
-      usedInExplanation: false,
-    }));
+    const { isDatabaseConnected } = await import('../config/database.js');
+    if (isDatabaseConnected()) {
+      const retriever = new MongoKeywordRetriever({ topK: config.rag.topK });
+      retrievedDocs = await retriever.invoke(searchQuery);
+      retrievedSources = retrievedDocs.map((doc) => ({
+        title: doc.metadata.title,
+        category: doc.metadata.category,
+        excerpt: doc.pageContent.slice(0, 250),
+        relevanceScore: doc.metadata.score ?? null,
+        usedInExplanation: false,
+      }));
+    }
   } catch (e) {
     logger.warn('RAG retrieval failed for normal food, continuing without context', { error: e.message });
   }
