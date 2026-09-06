@@ -29,9 +29,9 @@ const config = {
 
   groq: {
     apiKey: process.env.GROQ_API_KEY || null,
-    // NOTE: Groq retired llama models in 2025. Verified working 2026-09-06: gpt-oss-20b/120b, qwen/qwen3.6-27b (vision)
+    // NOTE: Groq retired llama models in 2025. Verified working 2026-09-06: gpt-oss-20b/120b, llama-4-scout-17b-16e-instruct (vision)
     model: process.env.GROQ_MODEL || 'openai/gpt-oss-20b',
-    visionModel: process.env.GROQ_VISION_MODEL || 'qwen/qwen3.6-27b',
+    visionModel: process.env.GROQ_VISION_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct',
     baseUrl: process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1',
   },
 

@@ -135,6 +135,19 @@ function Sources({ items }) {
   );
 }
 
+function NonFoodBanner({ code, details }) {
+  const isUncertain = code === 'UNCERTAIN_FOOD';
+  return (
+    <div className="estimated-banner" style={{ borderColor: isUncertain ? '#fbbf24' : '#f87171', background: isUncertain ? 'linear-gradient(135deg,#fffbeb 0%,#fef3c7 100%)' : 'linear-gradient(135deg,#fef2f2 0%,#fee2e2 100%)', color: isUncertain ? '#92400e' : '#991b1b' }}>
+      <Info size={16} />
+      <span>
+        <strong>{isUncertain ? 'Unclear image' : 'Not a food item'}</strong> — {isUncertain ? 'This image could not be confidently identified as food. Please upload a clearer image containing the food or food label.' : 'This image does not appear to contain a food product. Please upload an image of food or a food nutrition label.'}
+        {details?.foodType ? <span className="row-meta" style={{ display: 'block', marginTop: 4, color: 'inherit', opacity: 0.85 }}>Detected: {details.foodType} · confidence {Math.round((details.confidence ?? 0)*100)}%{details.reason ? ` · ${details.reason}` : ''}</span> : null}
+      </span>
+    </div>
+  );
+}
+
 function FallbackBanner({ reason }) {
   if (!reason) return null;
   const isMissingKey = reason.code === 'LLM_NOT_CONFIGURED';
@@ -317,6 +330,7 @@ function NormalFoodFlow({ apiBaseUrl, showToast }) {
   const [detectedFoods, setDetectedFoods] = useState([]);
   const [manualInput, setManualInput] = useState("");
   const [result, setResult] = useState(null);
+  const [validationError, setValidationError] = useState(null);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
 
@@ -325,6 +339,7 @@ function NormalFoodFlow({ apiBaseUrl, showToast }) {
     setSelectedFile(file);
     setDetectedFoods([]);
     setResult(null);
+    setValidationError(null);
     setPreviewUrl((cur) => { if (cur) URL.revokeObjectURL(cur); return URL.createObjectURL(file); });
   }, []);
 
@@ -370,8 +385,14 @@ function NormalFoodFlow({ apiBaseUrl, showToast }) {
         const res = await fetch(`${base}/api/v1/food/recognize`, { method: "POST", body: fd, signal: controller.signal, cache: 'no-store' });
         clearTimeout(timeout);
         const payload = await res.json().catch(() => ({}));
-        if (!res.ok || !payload.success) throw new Error(payload.error?.message || `Recognition failed ${res.status}`);
+        if (!res.ok || !payload.success) {
+          const err = new Error(payload.error?.message || `Recognition failed ${res.status}`);
+          err.code = payload.error?.code;
+          err.details = payload.error?.details;
+          throw err;
+        }
         const foods = payload.data.foods || [];
+        setValidationError(null);
         if (!foods.length) {
           showToast("No food detected — add items manually below.");
           setDetectedFoods([{ name: "", confidence: 0, portion: { size: "medium", grams: "", quantity: "" } }]);
@@ -380,6 +401,12 @@ function NormalFoodFlow({ apiBaseUrl, showToast }) {
         return;
       } catch (e) {
         clearTimeout(timeout);
+        if (e.code === 'NON_FOOD_DETECTED' || e.code === 'UNCERTAIN_FOOD') {
+          setValidationError({ code: e.code, details: e.details });
+          setDetectedFoods([]);
+          setIsRecognizing(false);
+          return;
+        }
         const isNet = e.name === 'TypeError' && String(e.message).includes('fetch');
         const isAbort = e.name === 'AbortError';
         if (attempt < 3 && isNet) {
@@ -474,6 +501,8 @@ function NormalFoodFlow({ apiBaseUrl, showToast }) {
         {previewUrl ? <img src={previewUrl} alt="Meal preview" /> : <div className="preview-placeholder"><Salad size={28} /></div>}
       </div>
 
+      {validationError && <NonFoodBanner code={validationError.code} details={validationError.details} />}
+
       <div style={{ display: "flex", gap: 10 }}>
         <button className="primary-button" style={{ flex: 1 }} type="button" onClick={recognize} disabled={!selectedFile || isRecognizing}>
           {isRecognizing ? <><Loader2 className="spin" size={16} /> Recognizing…</> : <><Search size={16} /> Recognize Food</>}
@@ -566,6 +595,7 @@ export default function App() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState("");
   const [result, setResult] = useState(null);
+  const [validationError, setValidationError] = useState(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisStep, setAnalysisStep] = useState(0);
@@ -614,6 +644,8 @@ export default function App() {
   const handleFile = useCallback((file) => {
     if (!file) return;
     setSelectedFile(file);
+    setValidationError(null);
+    setResult(null);
     setPreviewUrl((cur) => { if (cur) URL.revokeObjectURL(cur); return URL.createObjectURL(file); });
   }, []);
 
@@ -693,6 +725,11 @@ export default function App() {
           continue;
         }
         let msg = err.message;
+        if (err.code === 'NON_FOOD_DETECTED' || err.code === 'UNCERTAIN_FOOD') {
+          setValidationError({ code: err.code, details: err.details, message: err.message });
+          setResult(null);
+          break;
+        }
         if (err.code === 'EXTRACTION_INCOMPLETE') {
           msg = err.message + (err.details?.foundFields ? ` (found: ${err.details.foundFields})` : '') + ' — Tip: tight crop, good light, flat label. Or try Normal Food mode for meals without labels.';
           showToast(msg, 9000);
@@ -754,10 +791,10 @@ export default function App() {
             </header>
 
             <div className="mode-toggle" role="tablist" aria-label="Analysis mode">
-              <button role="tab" aria-selected={mode === "packaged"} type="button" className={`mode-card ${mode === "packaged" ? "active" : ""}`} onClick={() => { setMode("packaged"); setResult(null); }}>
+              <button role="tab" aria-selected={mode === "packaged"} type="button" className={`mode-card ${mode === "packaged" ? "active" : ""}`} onClick={() => { setMode("packaged"); setResult(null); setValidationError(null); }}>
                 <Package size={16} /><span className="mode-title">Packaged</span>
               </button>
-              <button role="tab" aria-selected={mode === "normal"} type="button" className={`mode-card ${mode === "normal" ? "active" : ""}`} onClick={() => { setMode("normal"); setResult(null); }}>
+              <button role="tab" aria-selected={mode === "normal"} type="button" className={`mode-card ${mode === "normal" ? "active" : ""}`} onClick={() => { setMode("normal"); setResult(null); setValidationError(null); }}>
                 <Utensils size={16} /><span className="mode-title">Normal Food</span>
               </button>
             </div>
@@ -785,6 +822,7 @@ export default function App() {
                 <button className="primary-button" type="submit" disabled={isAnalyzing}>
                   {isAnalyzing ? <><Loader2 className="spin" size={16} /> {["Uploading…", "Extracting nutrition…", "Scoring…", "Generating AI insights…"][analysisStep] || "Analyzing…"}</> : "Analyze product"}
                 </button>
+                {validationError && <NonFoodBanner code={validationError.code} details={validationError.details} />}
                 {isAnalyzing && <div className="row-meta" style={{ textAlign: 'center', fontSize: '0.78rem' }}>Usually ~6-10s (warmed). First cold start may take ~20s — image is auto-compressed for speed.</div>}
 
                 <div className="row-meta" style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "center", marginTop: 2 }}>
@@ -800,7 +838,19 @@ export default function App() {
 
           <div className="result-pane">
             {mode === "packaged" ? (
-              result ? <ResultPanel result={result} /> : (
+              validationError ? (
+                <div className="empty-state" style={{ minHeight: 320 }}>
+                  <div className="empty-icon" style={{ background: validationError.code==='NON_FOOD_DETECTED' ? '#fef2f2' : '#fffbeb', borderColor: validationError.code==='NON_FOOD_DETECTED' ? '#fecaca' : '#fde68a' }}>
+                    {validationError.code==='NON_FOOD_DETECTED' ? <AlertCircle size={28} color="#dc2626" /> : <Info size={28} color="#92400e" />}
+                  </div>
+                  <h2>{validationError.code==='NON_FOOD_DETECTED' ? 'Not a food item' : 'Unclear image'}</h2>
+                  <p>{validationError.code==='NON_FOOD_DETECTED' ? 'This image does not appear to contain food. Please upload a food item or a food nutrition label.' : 'This image could not be confidently identified as food. Please upload a clearer image containing the food or food label.'}</p>
+                  <div style={{ marginTop: 16 }}>
+                    <NonFoodBanner code={validationError.code} details={validationError.details} />
+                  </div>
+                  <button className="secondary-button" style={{ marginTop: 16 }} onClick={() => setValidationError(null)}>Try another image</button>
+                </div>
+              ) : result ? <ResultPanel result={result} /> : (
                 <div className="empty-state">
                   <div className="empty-icon"><Apple size={32} /></div>
                   <p className="eyebrow">Ready to analyze</p>

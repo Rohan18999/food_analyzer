@@ -4,6 +4,7 @@ import { calculateHealthScore } from "../domain/scoring/healthScoreEngine.js";
 import { createProduct } from "../repositories/product.repository.js";
 import { createAnalysis } from "../repositories/analysis.repository.js";
 import { runRagAnalysis } from "./ragAnalysis.service.js";
+import { validateFoodImage } from "../ai/foodValidation/foodValidation.service.js";
 import { AppError } from "../utils/AppError.js";
 import { logger } from "../utils/logger.js";
 
@@ -15,6 +16,29 @@ export async function analyzeProductImage(imagePath) {
   const pipelineStart = Date.now();
 
   try {
+    // Food Validation — before expensive OCR (packaged flow §5)
+    const validation = await validateFoodImage(imagePath);
+    logger.info('Food Validation (packaged):', { isFood: validation.isFood, confidence: validation.confidence, foodType: validation.foodType });
+    const isServiceFallback = validation.confidence === 0.5 && validation.reason && validation.reason.includes('proceeding as uncertain');
+    if (!validation.isFood && validation.confidence >= 0.75 && validation.foodType === 'non_food') {
+      throw new AppError(
+        'This image does not appear to contain a food product. Please upload an image of food or a food nutrition label.',
+        422,
+        'NON_FOOD_DETECTED',
+        { isFood: validation.isFood, confidence: validation.confidence, foodType: validation.foodType, reason: validation.reason }
+      );
+    }
+    if (!isServiceFallback && (validation.foodType === 'uncertain' || (!validation.isFood && validation.confidence < 0.75))) {
+      if (validation.confidence < 0.75 || validation.foodType === 'uncertain') {
+        throw new AppError(
+          'This image could not be confidently identified as food. Please upload a clearer image containing the food or food label.',
+          422,
+          'UNCERTAIN_FOOD',
+          { isFood: validation.isFood, confidence: validation.confidence, foodType: validation.foodType, reason: validation.reason }
+        );
+      }
+    }
+
     const ocrResult = await extractProductFromImage(imagePath);
 
     if (!ocrResult.success) {

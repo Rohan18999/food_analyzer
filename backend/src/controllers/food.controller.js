@@ -1,5 +1,6 @@
 import fs from 'fs';
 import { recognizeFoodFromImage } from '../ai/foodRecognition/foodRecognition.service.js';
+import { validateFoodImage } from '../ai/foodValidation/foodValidation.service.js';
 import { analyzeNormalFood, getSupportedFoods } from '../services/normalFood.service.js';
 import { AppError } from '../utils/AppError.js';
 import { logger } from '../utils/logger.js';
@@ -8,9 +9,29 @@ export async function recognizeFood(req, res, next) {
   if (!req.file) throw new AppError('No image file provided. Use field name "image".', 400, 'INVALID_IMAGE');
   const imagePath = req.file.path;
   try {
+    const validation = await validateFoodImage(imagePath);
+    logger.info('Food Validation (normal):', { isFood: validation.isFood, confidence: validation.confidence, foodType: validation.foodType });
+    const isServiceFallback = validation.confidence === 0.5 && validation.reason && validation.reason.includes('proceeding as uncertain');
+    if (!validation.isFood && validation.confidence >= 0.75 && validation.foodType === 'non_food') {
+      throw new AppError(
+        'This image does not appear to contain a food product. Please upload an image of food or a food nutrition label.',
+        422,
+        'NON_FOOD_DETECTED',
+        { isFood: validation.isFood, confidence: validation.confidence, foodType: validation.foodType, reason: validation.reason }
+      );
+    }
+    if (!isServiceFallback && (validation.foodType === 'uncertain' || (!validation.isFood && validation.confidence < 0.75))) {
+      throw new AppError(
+        'This image could not be confidently identified as food. Please upload a clearer image containing the food or food label.',
+        422,
+        'UNCERTAIN_FOOD',
+        { isFood: validation.isFood, confidence: validation.confidence, foodType: validation.foodType, reason: validation.reason }
+      );
+    }
     const foods = await recognizeFoodFromImage(imagePath);
     res.status(200).json({ success: true, data: { foods } });
   } catch (error) {
+    if (error instanceof AppError) return next(error);
     next(new AppError(error.message || 'Food recognition failed', 503, 'VISION_ERROR'));
   } finally {
     if (imagePath && fs.existsSync(imagePath)) {
