@@ -2,10 +2,23 @@ import fs from 'fs';
 import config from '../../config/env.js';
 import { logger } from '../../utils/logger.js';
 
+const VISION_FALLBACKS = [
+  'meta-llama/llama-4-maverick-17b-128e-instruct',
+  'meta-llama/llama-4-scout-17b-16e-instruct',
+  'llama-3.2-90b-vision-preview',
+];
+
 function getVisionModel() {
-  const m = config.groq.visionModel || 'meta-llama/llama-4-scout-17b-16e-instruct';
-  if (m === 'qwen/qwen3.6-27b' || m === 'qwen/qwen3-32b') return 'meta-llama/llama-4-scout-17b-16e-instruct';
+  const m = config.groq.visionModel || 'meta-llama/llama-4-maverick-17b-128e-instruct';
+  if (m === 'qwen/qwen3.6-27b' || m === 'qwen/qwen3-32b' || m === 'qwen/qwen3.6-27b') return 'meta-llama/llama-4-maverick-17b-128e-instruct';
+  if (m === 'qwen/qwen3.6-27b') return 'meta-llama/llama-4-maverick-17b-128e-instruct';
   return m;
+}
+
+function getVisionCandidates() {
+  const primary = getVisionModel();
+  const uniq = [primary, ...VISION_FALLBACKS.filter(c => c !== primary)];
+  return uniq;
 }
 
 function stripJsonFence(content) {
@@ -92,9 +105,9 @@ Confidence: 0.9+ high certainty, 0.6-0.75 moderate, <0.6 low. Be calibrated.`;
 
   const userText = `Is this image food? Classify as packaged_food, normal_food, non_food, or uncertain. Return only JSON.`;
 
-  async function callVision(withJsonMode) {
+  async function callVision(withJsonMode, model) {
     const body = {
-      model: getVisionModel(),
+      model,
       temperature: 0.1,
       max_tokens: 300,
       ...(withJsonMode ? { response_format: { type: 'json_object' } } : {}),
@@ -124,50 +137,77 @@ Confidence: 0.9+ high certainty, 0.6-0.75 moderate, <0.6 low. Be calibrated.`;
     return res;
   }
 
-  let response = await callVision(true);
-  if (!response.ok) {
+  // Try vision models in order; handle 404 retired + json_object fallback
+  let lastText = '';
+  let lastStatus = 0;
+  for (const model of getVisionCandidates()) {
+    let response = await callVision(true, model);
+    if (response.ok) {
+      // success
+      const dataOk = await response.json();
+      const contentOk = dataOk.choices?.[0]?.message?.content;
+      if (contentOk) {
+        const parsedOk = extractJsonObject(contentOk);
+        const normOk = normalizeValidation(parsedOk);
+        if (normOk) {
+          logger.info('Food Validation:', { isFood: normOk.isFood, confidence: normOk.confidence, foodType: normOk.foodType, model });
+          return normOk;
+        }
+      }
+      // if parsing failed but response ok, try without json mode
+      response = await callVision(false, model);
+      if (response.ok) {
+        const data2 = await response.json();
+        const content2 = data2.choices?.[0]?.message?.content;
+        const parsed2 = extractJsonObject(content2 || '');
+        const norm2 = normalizeValidation(parsed2);
+        if (norm2) {
+          logger.info('Food Validation (fallback json):', { isFood: norm2.isFood, confidence: norm2.confidence, foodType: norm2.foodType, model });
+          return norm2;
+        }
+      }
+      // model succeeded but parsing still failed — fail open as uncertain
+      logger.warn('Food validation model responded but non-JSON, treating as uncertain', { model });
+      return { isFood: true, confidence: 0.5, foodType: 'uncertain', reason: 'Non-JSON validation response' };
+    }
     const text = await response.text();
+    lastText = text;
+    lastStatus = response.status;
     const isJsonValidate = text.includes('json_validate_failed') || text.includes('Failed to validate JSON') || text.includes('failed_generation');
     if (isJsonValidate) {
-      logger.warn('Food validation json_object rejected, retrying without json mode', { model: getVisionModel() });
-      response = await callVision(false);
-      if (!response.ok) {
-        const text2 = await response.text();
-        logger.error('Food validation failed after fallback', { status: response.status, text: text2.slice(0, 500) });
-        // Fail open: allow food to avoid blocking valid users on transient Groq error
-        // Caller can decide; but we return uncertain so caller can ask for clearer image
-        if (response.status === 401) throw new Error('Groq API key invalid');
-        // For vision errors, return uncertain rather than throwing non-food
-        logger.warn('Food validation Groq error, returning uncertain (fail-open)', { status: response.status });
-        return { isFood: true, confidence: 0.5, foodType: 'uncertain', reason: 'Vision temporarily unavailable — proceeding as uncertain' };
+      logger.warn('Food validation json_object rejected, retrying without json mode', { model });
+      const retry = await callVision(false, model);
+      if (retry.ok) {
+        const dataR = await retry.json();
+        const contentR = dataR.choices?.[0]?.message?.content;
+        const parsedR = extractJsonObject(contentR || '');
+        const normR = normalizeValidation(parsedR);
+        if (normR) {
+          logger.info('Food Validation (json fallback):', { isFood: normR.isFood, confidence: normR.confidence, foodType: normR.foodType, model });
+          return normR;
+        }
+      } else {
+        const t2 = await retry.text();
+        lastText = t2;
+        lastStatus = retry.status;
       }
-    } else {
-      logger.error('Food validation Groq error', { status: response.status, text: text.slice(0, 500) });
-      if (response.status === 401) throw new Error('Groq API key invalid');
-      if (response.status === 429) {
-        // Rate limit — fail open as uncertain
-        return { isFood: true, confidence: 0.5, foodType: 'uncertain', reason: 'Rate limited — proceeding as uncertain' };
-      }
-      // Fail open
-      return { isFood: true, confidence: 0.5, foodType: 'uncertain', reason: 'Validation error — proceeding as uncertain' };
+      continue; // try next model
     }
+    if (response.status === 401) throw new Error('Groq API key invalid');
+    if (response.status === 404 && text.includes('model')) {
+      logger.warn('Vision model not found, trying fallback', { tried: model, text: text.slice(0, 200) });
+      continue; // try next candidate
+    }
+    if (response.status === 429) {
+      return { isFood: true, confidence: 0.5, foodType: 'uncertain', reason: 'Rate limited — proceeding as uncertain' };
+    }
+    // other error — try next model
+    logger.warn('Food validation error, trying next model', { model, status: response.status, text: text.slice(0, 300) });
+    continue;
   }
 
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content;
-  if (!content) {
-    logger.warn('Empty validation response, treating as uncertain');
-    return { isFood: true, confidence: 0.5, foodType: 'uncertain', reason: 'Empty response' };
-  }
-
-  const parsed = extractJsonObject(content);
-  const normalized = normalizeValidation(parsed);
-  if (!normalized) {
-    logger.warn('Food validation returned non-JSON, treating as uncertain', { content: content.slice(0, 300) });
-    return { isFood: true, confidence: 0.5, foodType: 'uncertain', reason: 'Non-JSON validation response' };
-  }
-
-  logger.info('Food Validation:', { isFood: normalized.isFood, confidence: normalized.confidence, foodType: normalized.foodType, reason: normalized.reason });
-
-  return normalized;
+  // All vision models failed — fail open as uncertain, caller will allow packaged/normal to proceed
+  logger.error('Food validation all vision models failed, failing open as uncertain', { lastStatus, lastText: lastText.slice(0, 500) });
+  if (lastStatus === 401) throw new Error('Groq API key invalid');
+  return { isFood: true, confidence: 0.5, foodType: 'uncertain', reason: 'Vision temporarily unavailable — proceeding as uncertain' };
 }
