@@ -27,12 +27,14 @@ const config = {
   maxFileSizeMb: parseInt(process.env.MAX_FILE_SIZE_MB || '10', 10),
   uploadDir: process.env.UPLOAD_DIR || './uploads',
 
-  groq: {
-    apiKey: process.env.GROQ_API_KEY || null,
-    // Groq vision docs 2026-09: only qwen/qwen3.6-27b (and qwen3.8) support vision + JSON mode; llama vision retired
-    model: process.env.GROQ_MODEL || 'openai/gpt-oss-20b',
-    visionModel: process.env.GROQ_VISION_MODEL || 'qwen/qwen3.6-27b',
-    baseUrl: process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1',
+  // OpenRouter only — Groq removed (Option A). Nvidia for text RAG (strong JSON, free) + Qwen VL for vision (multimodal, free)
+  openrouter: {
+    apiKey: process.env.OPENROUTER_API_KEY || null,
+    model: process.env.OPENROUTER_MODEL || 'nvidia/llama-3.1-nemotron-70b-instruct',
+    visionModel: process.env.OPENROUTER_VISION_MODEL || 'qwen/qwen-2.5-vl-32b-instruct',
+    baseUrl: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
+    siteUrl: process.env.OPENROUTER_SITE_URL || 'https://foodanalyzer-five.vercel.app',
+    appName: process.env.OPENROUTER_APP_NAME || 'AI Food Health Analyzer',
   },
 
   rag: {

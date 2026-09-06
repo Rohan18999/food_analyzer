@@ -60,10 +60,10 @@ export function startServer(app) {
       env: config.nodeEnv,
       url: `http://localhost:${config.port}`,
     });
-    if (!config.groq.apiKey) {
-      logger.warn('GROQ_API_KEY not set — AI explanations will use deterministic fallback. Set it in backend/.env');
+    if (!config.openrouter.apiKey) {
+      logger.warn('OPENROUTER_API_KEY not set — AI explanations will use deterministic fallback. Set it in backend/.env (https://openrouter.ai/keys)');
     } else {
-      logger.info(`Groq configured`, { model: config.groq.model, visionModel: config.groq.visionModel });
+      logger.info(`OpenRouter configured`, { model: config.openrouter.model, visionModel: config.openrouter.visionModel });
     }
     if (!config.mongodbUri) {
       logger.warn('MONGODB_URI not set — RAG retrieval disabled, analyses will run without knowledge base');

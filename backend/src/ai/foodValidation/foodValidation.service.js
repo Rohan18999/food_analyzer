@@ -2,23 +2,6 @@ import fs from 'fs';
 import config from '../../config/env.js';
 import { logger } from '../../utils/logger.js';
 
-const VISION_FALLBACKS = [
-  'qwen/qwen3.6-27b',
-  'qwen/qwen3.8-27b',
-];
-
-function getVisionModel() {
-  const m = config.groq.visionModel || 'qwen/qwen3.6-27b';
-  if (m.includes('llama-4') || m.includes('llama-3.2')) return 'qwen/qwen3.6-27b';
-  return m;
-}
-
-function getVisionCandidates() {
-  const primary = getVisionModel();
-  const uniq = [primary, ...VISION_FALLBACKS.filter(c => c !== primary)];
-  return uniq;
-}
-
 function stripJsonFence(content) {
   return content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
 }
@@ -54,10 +37,8 @@ function normalizeValidation(parsed) {
   else if (['non_food', 'non-food', 'not_food', 'object', 'nonfood'].includes(rawType)) foodType = 'non_food';
   else if (['uncertain', 'unclear', 'ambiguous'].includes(rawType)) foodType = 'uncertain';
   else {
-    // Infer from isFood if type missing
     foodType = isFood ? 'normal_food' : 'non_food';
   }
-  // If isFood false but type says packaged/normal, fix to non_food
   if (!isFood && (foodType === 'packaged_food' || foodType === 'normal_food')) foodType = 'non_food';
   if (isFood && foodType === 'non_food') foodType = 'uncertain';
   return {
@@ -68,21 +49,30 @@ function normalizeValidation(parsed) {
   };
 }
 
+function getVisionConfig() {
+  return {
+    apiKey: config.openrouter.apiKey,
+    baseUrl: config.openrouter.baseUrl,
+    model: config.openrouter.visionModel,
+    headers: {
+      'HTTP-Referer': config.openrouter.siteUrl,
+      'X-Title': config.openrouter.appName,
+    },
+  };
+}
+
 /**
  * Food Validation — determines if image contains food before expensive OCR/recognition.
- * Reuses existing Groq vision model (no new provider).
- * Threshold logic is applied by caller; this service just returns raw validation.
+ * OpenRouter only (nvidia+qwen). Fail-open as uncertain on error so valid users not blocked.
  */
 export async function validateFoodImage(imagePath) {
-  if (!config.groq.apiKey) {
-    logger.warn('GROQ_API_KEY not set — skipping food validation (allowing as food)');
-    return { isFood: true, confidence: 0.5, foodType: 'uncertain', reason: 'No GROQ_API_KEY — validation skipped' };
+  const visionCfg = getVisionConfig();
+  if (!visionCfg.apiKey) {
+    logger.warn('OPENROUTER_API_KEY not set — skipping food validation (allowing as food)');
+    return { isFood: true, confidence: 0.5, foodType: 'uncertain', reason: 'No OPENROUTER_API_KEY — validation skipped' };
   }
 
   const imageBuffer = fs.readFileSync(imagePath);
-  // Guard large images — vision payload limit ~4MB base64; we already compress frontend to 900px
-  // but backend image is raw upload; if >3MB, the base64 will be >4MB and Groq may reject.
-  // We keep as is; sharp preprocessing for OCR is separate, vision uses raw.
   const base64 = imageBuffer.toString('base64');
   const mime = detectMime(imagePath);
   const dataUrl = `data:${mime};base64,${base64}`;
@@ -103,9 +93,9 @@ Confidence: 0.9+ high certainty, 0.6-0.75 moderate, <0.6 low. Be calibrated.`;
 
   const userText = `Is this image food? Classify as packaged_food, normal_food, non_food, or uncertain. Return only JSON.`;
 
-  async function callVision(withJsonMode, model) {
+  async function callVision(withJsonMode) {
     const body = {
-      model,
+      model: visionCfg.model,
       temperature: 0.1,
       max_tokens: 300,
       ...(withJsonMode ? { response_format: { type: 'json_object' } } : {}),
@@ -122,11 +112,12 @@ Confidence: 0.9+ high certainty, 0.6-0.75 moderate, <0.6 low. Be calibrated.`;
     };
     const controller = new AbortController();
     const t = setTimeout(() => controller.abort(), 15000);
-    const res = await fetch(`${config.groq.baseUrl}/chat/completions`, {
+    const res = await fetch(`${visionCfg.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${config.groq.apiKey}`,
+        Authorization: `Bearer ${visionCfg.apiKey}`,
         'Content-Type': 'application/json',
+        ...visionCfg.headers,
       },
       signal: controller.signal,
       body: JSON.stringify(body),
@@ -135,77 +126,40 @@ Confidence: 0.9+ high certainty, 0.6-0.75 moderate, <0.6 low. Be calibrated.`;
     return res;
   }
 
-  // Try vision models in order; handle 404 retired + json_object fallback
-  let lastText = '';
-  let lastStatus = 0;
-  for (const model of getVisionCandidates()) {
-    let response = await callVision(true, model);
-    if (response.ok) {
-      // success
-      const dataOk = await response.json();
-      const contentOk = dataOk.choices?.[0]?.message?.content;
-      if (contentOk) {
-        const parsedOk = extractJsonObject(contentOk);
-        const normOk = normalizeValidation(parsedOk);
-        if (normOk) {
-          logger.info('Food Validation:', { isFood: normOk.isFood, confidence: normOk.confidence, foodType: normOk.foodType, model });
-          return normOk;
-        }
-      }
-      // if parsing failed but response ok, try without json mode
-      response = await callVision(false, model);
-      if (response.ok) {
-        const data2 = await response.json();
-        const content2 = data2.choices?.[0]?.message?.content;
-        const parsed2 = extractJsonObject(content2 || '');
-        const norm2 = normalizeValidation(parsed2);
-        if (norm2) {
-          logger.info('Food Validation (fallback json):', { isFood: norm2.isFood, confidence: norm2.confidence, foodType: norm2.foodType, model });
-          return norm2;
-        }
-      }
-      // model succeeded but parsing still failed — fail open as uncertain
-      logger.warn('Food validation model responded but non-JSON, treating as uncertain', { model });
-      return { isFood: true, confidence: 0.5, foodType: 'uncertain', reason: 'Non-JSON validation response' };
-    }
+  let response = await callVision(true);
+  if (!response.ok) {
     const text = await response.text();
-    lastText = text;
-    lastStatus = response.status;
     const isJsonValidate = text.includes('json_validate_failed') || text.includes('Failed to validate JSON') || text.includes('failed_generation');
     if (isJsonValidate) {
-      logger.warn('Food validation json_object rejected, retrying without json mode', { model });
-      const retry = await callVision(false, model);
-      if (retry.ok) {
-        const dataR = await retry.json();
-        const contentR = dataR.choices?.[0]?.message?.content;
-        const parsedR = extractJsonObject(contentR || '');
-        const normR = normalizeValidation(parsedR);
-        if (normR) {
-          logger.info('Food Validation (json fallback):', { isFood: normR.isFood, confidence: normR.confidence, foodType: normR.foodType, model });
-          return normR;
-        }
-      } else {
-        const t2 = await retry.text();
-        lastText = t2;
-        lastStatus = retry.status;
+      logger.warn('OpenRouter vision json_object rejected, retrying without json mode', { model: visionCfg.model });
+      response = await callVision(false);
+    }
+    if (!response.ok) {
+      const errText = await response.text();
+      logger.error('OpenRouter vision validation failed', { status: response.status, text: errText.slice(0, 500) });
+      if (response.status === 401) throw new Error('OPENROUTER_API_KEY invalid');
+      if (response.status === 429) {
+        return { isFood: true, confidence: 0.5, foodType: 'uncertain', reason: 'Rate limited — proceeding as uncertain' };
       }
-      continue; // try next model
+      return { isFood: true, confidence: 0.5, foodType: 'uncertain', reason: 'Vision temporarily unavailable — proceeding as uncertain' };
     }
-    if (response.status === 401) throw new Error('Groq API key invalid');
-    if (response.status === 404 && text.includes('model')) {
-      logger.warn('Vision model not found, trying fallback', { tried: model, text: text.slice(0, 200) });
-      continue; // try next candidate
-    }
-    if (response.status === 429) {
-      return { isFood: true, confidence: 0.5, foodType: 'uncertain', reason: 'Rate limited — proceeding as uncertain' };
-    }
-    // other error — try next model
-    logger.warn('Food validation error, trying next model', { model, status: response.status, text: text.slice(0, 300) });
-    continue;
   }
 
-  // All vision models failed — fail open as uncertain, caller will allow packaged/normal to proceed
-  logger.error('Food validation all vision models failed, failing open as uncertain', { lastStatus, lastText: lastText.slice(0, 500) });
-  if (lastStatus === 401) throw new Error('Groq API key invalid');
-  return { isFood: true, confidence: 0.5, foodType: 'uncertain', reason: 'Vision temporarily unavailable — proceeding as uncertain' };
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) {
+    logger.warn('Empty validation response, treating as uncertain');
+    return { isFood: true, confidence: 0.5, foodType: 'uncertain', reason: 'Empty response' };
+  }
+
+  const parsed = extractJsonObject(content);
+  const normalized = normalizeValidation(parsed);
+  if (!normalized) {
+    logger.warn('Food validation returned non-JSON, treating as uncertain', { content: content.slice(0, 300) });
+    return { isFood: true, confidence: 0.5, foodType: 'uncertain', reason: 'Non-JSON validation response' };
+  }
+
+  logger.info('Food Validation:', { isFood: normalized.isFood, confidence: normalized.confidence, foodType: normalized.foodType, model: visionCfg.model });
+
+  return normalized;
 }
