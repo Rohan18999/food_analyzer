@@ -121,10 +121,14 @@ export async function analyzeNormalFood({ foods, portion: globalPortion }) {
   let llmOutput;
   try {
     if (!config.groq.apiKey) throw new Error('GROQ_API_KEY not configured');
-    llmOutput = await generateGroqJson({
+    const groqPromise = generateGroqJson({
       systemPrompt: NORMAL_FOOD_SYSTEM_PROMPT,
       userPrompt,
     });
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('AI insights timed out after 7s')), 7000)
+    );
+    llmOutput = await Promise.race([groqPromise, timeoutPromise]);
     // mark used sources
     retrievedSources = retrievedSources.map((s) => ({
       ...s,

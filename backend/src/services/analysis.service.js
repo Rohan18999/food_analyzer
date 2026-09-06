@@ -79,20 +79,26 @@ export async function analyzeProductImage(imagePath) {
     let ragFallback = false;
     let ragError = null;
     try {
-      ragResult = await runRagAnalysis({
+      // Timeout after 7s — ensures fast fallback if Groq is slow (Render free tier)
+      const ragPromise = runRagAnalysis({
         product: productPayload,
         healthScore: scoringResult.healthScore,
         verdict: scoringResult.verdict,
         scoreBreakdown: scoringResult.scoreBreakdown,
       });
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('AI insights timed out after 7s — using fast fallback')), 7000)
+      );
+      ragResult = await Promise.race([ragPromise, timeoutPromise]);
       ragDurationMs = Date.now() - ragStart;
     } catch (error) {
       ragDurationMs = Date.now() - ragStart;
       ragError = error;
       ragFallback = true;
       logger.warn('RAG analysis unavailable, using deterministic fallback', {
-        code: error.code,
+        code: error.code || 'TIMEOUT',
         message: error.message,
+        ragDurationMs,
       });
       ragResult = buildPackagedFallback({
         product: productPayload,

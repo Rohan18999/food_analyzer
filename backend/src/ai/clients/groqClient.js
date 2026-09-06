@@ -82,12 +82,24 @@ function getFriendlyGroqError(status, body) {
   return `Groq request failed: ${status} ${body.slice(0, 400)}`;
 }
 
+const groqCache = new Map();
+function cacheKey(model, systemPrompt, userPrompt) {
+  return `${model}::${systemPrompt.slice(0, 80)}::${userPrompt.slice(0, 400)}`;
+}
+
 export async function generateGroqJson({ systemPrompt, userPrompt, modelOverride }) {
   if (!config.groq.apiKey) {
     throw new Error('GROQ_API_KEY is required for Groq analysis');
   }
 
   const model = modelOverride || config.groq.model;
+  const key = cacheKey(model, systemPrompt, userPrompt);
+  if (groqCache.has(key)) {
+    return groqCache.get(key);
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 7000);
 
   const response = await fetch(`${config.groq.baseUrl}/chat/completions`, {
     method: 'POST',
@@ -95,16 +107,19 @@ export async function generateGroqJson({ systemPrompt, userPrompt, modelOverride
       Authorization: `Bearer ${config.groq.apiKey}`,
       'Content-Type': 'application/json',
     },
+    signal: controller.signal,
     body: JSON.stringify({
       model,
       temperature: 0.2,
+      max_tokens: 1200,
       response_format: { type: 'json_object' },
       messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
+        { role: 'system', content: systemPrompt + '\nRespond only with valid JSON.' },
+        { role: 'user', content: userPrompt + '\n\nReturn only valid JSON as specified.' },
       ],
     }),
   });
+  clearTimeout(timeout);
 
   if (!response.ok) {
     const errorText = await response.text();
@@ -119,5 +134,9 @@ export async function generateGroqJson({ systemPrompt, userPrompt, modelOverride
   }
 
   const parsed = JSON.parse(stripJsonFence(content));
-  return RagAnalysisOutputSchema.parse(normalizeGroqAnalysis(parsed));
+  const result = RagAnalysisOutputSchema.parse(normalizeGroqAnalysis(parsed));
+  // Cache for 10 minutes
+  groqCache.set(key, result);
+  setTimeout(() => groqCache.delete(key), 10 * 60 * 1000);
+  return result;
 }
