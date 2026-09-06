@@ -23,12 +23,40 @@ export async function analyzeProductImage(imagePath) {
 
     const extracted = ocrResult.data;
 
-    if (extracted.extractionConfidence < 0.3) {
+    // Lowered from 0.3 to 0.18 — many real labels omit fiber or have sparse ingredients but still scorable.
+    // We log details to help user understand what was missed.
+    if (extracted.extractionConfidence < 0.18) {
+      const found = Object.entries(extracted.nutritionFacts)
+        .filter(([, v]) => v != null && (typeof v === 'object' ? v.amount != null : true))
+        .map(([k]) => k)
+        .join(', ') || 'none';
+      logger.warn('Extraction confidence low', {
+        confidence: extracted.extractionConfidence,
+        foundFields: found,
+        ocrVariant: extracted.ocrVariant,
+        ingredientCount: extracted.ingredients.length,
+        ocrPreview: extracted.ocrRawText.slice(0, 300),
+      });
       throw new AppError(
-        "Could not extract sufficient nutrition information from image. Try a clearer photo of the nutrition label.",
+        `Could not extract sufficient nutrition information (confidence ${Math.round(extracted.extractionConfidence * 100)}% — found: ${found}). Try a tighter crop of the nutrition table, ensure good lighting and that the label is flat and in focus. Tip: also try the “Normal Food” mode if this is a meal without a label.`,
         422,
         "EXTRACTION_INCOMPLETE",
+        {
+          extractionConfidence: extracted.extractionConfidence,
+          foundFields: found,
+          ocrVariant: extracted.ocrVariant,
+          ingredientCount: extracted.ingredients.length,
+          ocrPreview: extracted.ocrRawText.slice(0, 400),
+          suggestion: 'Crop tightly around nutrition table + ingredients, avoid glare, hold phone parallel to label',
+        }
       );
+    }
+
+    if (extracted.extractionConfidence < 0.32) {
+      logger.warn('Proceeding with low-confidence extraction', {
+        confidence: extracted.extractionConfidence,
+        variant: extracted.ocrVariant,
+      });
     }
 
     const scoringStart = Date.now();

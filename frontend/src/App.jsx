@@ -493,7 +493,7 @@ export default function App() {
 
   const fileMeta = useMemo(() => selectedFile ? `${selectedFile.name} · ${formatBytes(selectedFile.size)}` : "JPEG, PNG, WebP up to 10 MB", [selectedFile]);
 
-  const showToast = useCallback((m) => { setToast(m); setTimeout(() => setToast(""), 6000); }, []);
+  const showToast = useCallback((m, dur = 6000) => { setToast(m); setTimeout(() => setToast(""), dur); }, []);
   const checkBackendStatus = useCallback(async () => {
     setBackendStatus({ status: "", label: "Checking" });
     const candidates = [
@@ -567,15 +567,29 @@ export default function App() {
       const r = await fetch(`${base}/api/v1/analysis`, { method: "POST", body: fd, signal: controller.signal });
       clearTimeout(timeout);
       const p = await r.json().catch(() => ({}));
-      if (!r.ok || !p.success) throw new Error(p.error?.message || p.message || `Analysis failed ${r.status}`);
+      if (!r.ok || !p.success) {
+        const err = new Error(p.error?.message || p.message || `Analysis failed ${r.status}`);
+        err.code = p.error?.code;
+        err.details = p.error?.details;
+        throw err;
+      }
       setResult(p.data);
       if (p.data?.isFallback) showToast(`Analysis completed with fallback: ${p.data.fallbackReason?.message || 'AI temporarily unavailable'}`);
     } catch (err) {
       clearTimeout(timeout);
       let msg = err.message;
-      if (err.name === 'AbortError') msg = `Request timed out after 90s — Render free tier may be cold starting or image is large. Try a clearer, smaller crop and retry. (${base})`;
-      else if (err.name === 'TypeError' && String(err.message).includes('fetch')) msg = `Failed to fetch ${base}/api/v1/analysis — backend may be sleeping. Wait 30s and retry. Check status is Ready.`;
-      showToast(msg);
+      if (err.code === 'EXTRACTION_INCOMPLETE') {
+        msg = err.message + (err.details?.foundFields ? ` (found: ${err.details.foundFields})` : '') + ' — Tip: tight crop, good light, flat label. Or try Normal Food mode for meals without labels.';
+        showToast(msg, 9000);
+      } else if (err.name === 'AbortError') {
+        msg = `Request timed out after 90s — Render free tier may be cold starting or image is large. Try a clearer, smaller crop and retry. (${base})`;
+        showToast(msg);
+      } else if (err.name === 'TypeError' && String(err.message).includes('fetch')) {
+        msg = `Failed to fetch ${base}/api/v1/analysis — backend may be sleeping. Wait 30s and retry.`;
+        showToast(msg);
+      } else {
+        showToast(msg);
+      }
     } finally { setIsAnalyzing(false); }
   };
 

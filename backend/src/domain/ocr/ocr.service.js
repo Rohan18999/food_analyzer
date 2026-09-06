@@ -201,14 +201,22 @@ function calculateExtractionConfidence(
     return value && (typeof value === "object" ? value.amount != null : true);
   }).length;
 
+  // Also count any nutrition field (calories, fat, carbs) to avoid penalizing labels that simply don't list fiber
+  const anyFields = ['calories', 'totalFat', 'saturatedFat', 'sodium', 'totalCarbohydrates', 'dietaryFiber', 'totalSugars', 'addedSugars', 'protein'].filter(k => {
+    const v = nutritionFacts[k];
+    return v != null && (typeof v === 'object' ? v.amount != null : true);
+  }).length;
+
   const fieldScore = fieldsFound / REQUIRED_FIELDS.length;
+  const anyScore = Math.min(anyFields / 3, 1); // reward any 3 fields found
+  const combinedFieldScore = Math.max(fieldScore, anyScore * 0.8);
   const ingredientScore = ingredients.length > 0 ? 1 : 0;
   const ocrScore =
     typeof ocrConfidence === "number" ? ocrConfidence / 100 : 0.5;
 
   return (
     Math.round(
-      (fieldScore * 0.5 + ingredientScore * 0.2 + ocrScore * 0.3) * 100,
+      (combinedFieldScore * 0.5 + ingredientScore * 0.2 + ocrScore * 0.3) * 100,
     ) / 100
   );
 }

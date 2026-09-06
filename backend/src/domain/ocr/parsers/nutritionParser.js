@@ -91,6 +91,8 @@ function normalizeForParsing(text) {
     .replace(/\bprotien\b/gi, "protein")
     .replace(/\bsuger\b/gi, "sugar")
     .replace(/\bof which\b/gi, "")
+    .replace(/\bsodium\s*[:\-]?\s*(\d+(?:\.\d+)?)\s*9\b/gi, "Sodium $1 mg")
+    .replace(/\bsalt\s*[:\-]?\s*(\d+(?:\.\d+)?)\s*g\b/gi, (m, n) => `Sodium ${parseFloat(n) * 1000} mg`)
     .trim();
 }
 

@@ -9,7 +9,7 @@ export function normalizeOcrText(rawText) {
     .replace(/[|]/g, " ")
     .replace(/(\d)\s+(\d)/g, "$1$2");
 
-  // Remove common OCR artifacts and special characters
+  // Remove common OCR artifacts and special characters — but keep colon for label parsing
   text = text
     .replace(/[\[\]{}()—––]/g, " ")
     .replace(/[«»""''`']/g, "'")
@@ -19,12 +19,28 @@ export function normalizeOcrText(rawText) {
     .replace(/[±×÷]/g, " ")
     .replace(/[¹²³]/g, " ")
     .replace(/[¼½¾]/g, " ")
-    .replace(/[;:]/g, " ")
     .replace(/[<>]/g, " ")
     .replace(/[\\\/]/g, " ")
     .replace(/[=+*]/g, " ")
     .replace(/[?]/g, " ")
     .replace(/[!]/g, " ");
+
+  // Fix common OCR misreads before parsing — careful not to corrupt ingredients (e.g., sea salt)
+  text = text
+    .replace(/\b[tT]otai\b/g, "Total")
+    .replace(/\b[Ss]od[i1l]um\b/g, "Sodium")
+    .replace(/\b[Ss]od[i1l]urn\b/g, "Sodium")
+    .replace(/\bPro\w*in\b/gi, "Protein")
+    .replace(/\b[Pp]rotien\b/gi, "Protein")
+    .replace(/\b[Ss]ug[ae]r\b/gi, "Sugar")
+    .replace(/\b[Ss]ugars\b/gi, "Sugars")
+    .replace(/\b[Ff]at\b/gi, "Fat")
+    .replace(/\b[Ff]ibre\b/gi, "Fiber")
+    .replace(/\b[Ff]ibre\b/gi, "Fiber")
+    .replace(/\b[Cc]alor[i1]e?s\b/gi, "Calories")
+    .replace(/\b[Cc]arbo\b/gi, "Carbohydrate")
+    .replace(/\b[Ss]aturat\w*\b/gi, "Saturated")
+    .replace(/\b[Cc]holest\w*\b/gi, "Cholesterol");
 
   return text
     .split("\n")

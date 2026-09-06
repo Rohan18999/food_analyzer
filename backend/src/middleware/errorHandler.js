@@ -15,11 +15,13 @@ export function errorHandler(err, req, res, _next) {
     logger.warn(err.message, { code });
   }
 
+  const details = err.details ? { details: err.details } : {};
   res.status(statusCode).json({
     success: false,
     error: {
       code,
       message: err.isOperational ? err.message : 'An unexpected error occurred',
+      ...details,
     },
   });
 }
