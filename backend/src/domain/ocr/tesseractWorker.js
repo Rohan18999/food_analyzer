@@ -54,18 +54,9 @@ export async function getTesseractWorker() {
 export async function warmupTesseract() {
   try {
     const worker = await getTesseractWorker();
-    // Real dummy recognize to JIT-compile WASM — saves 2-3s on first real image (critical for perceived speed)
-    try {
-      const dummyPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAADIAAAAyCAIAAACRXR/mAAAAKElEQVR4nO3BAQ0AAADCoPdPbQ8HFAAAAAAAAAAAAAAAAAD4GStIAAHVwHTDAAAAAElFTkSuQmCC';
-      const dummy = Buffer.from(dummyPngBase64, 'base64');
-      await Promise.race([
-        worker.recognize(dummy),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('warmup dummy timeout')), 4000)),
-      ]);
-      logger.info('Tesseract warmup complete (dummy recognize done)');
-    } catch (e) {
-      logger.info('Tesseract warmup complete (worker ready, dummy skipped)', { note: e.message });
-    }
+    // Worker is single-threaded — dummy recognize would block first real OCR.
+    // Just loading the worker + setting params is enough to cut 3-5s off cold start.
+    logger.info('Tesseract warmup complete (worker ready, no dummy to avoid blocking)');
     return worker;
   } catch (e) {
     logger.warn('Tesseract warmup failed — will lazy-init on first request', { error: e.message });

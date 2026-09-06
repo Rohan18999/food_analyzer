@@ -173,26 +173,35 @@ async function compressImage(file, maxWidth = 1024, quality = 0.72) {
   }
 }
 
-// Render free tier sleeps after ~15min idle — first request can take 30-50s to wake.
-// Ping /health/ready with short timeout before the heavy POST so we can show
-// a helpful "waking up" message instead of a generic timeout.
-async function wakeBackend(base, showToast) {
-  for (let attempt = 0; attempt < 2; attempt++) {
+// Render free tier sleeps after ~15min idle — cold boot takes 30-50s.
+// Poll /health/ready with long per-attempt timeout so we actually wait for wake
+// instead of fast-failing with "Failed to fetch". Total budget ~60s.
+async function wakeBackend(base, showToast, opts = {}) {
+  const { silent = false, maxMs = 60000 } = opts;
+  const start = Date.now();
+  let attempt = 0;
+  while (Date.now() - start < maxMs) {
+    attempt++;
     try {
       const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 8000);
-      const r = await fetch(`${base}/api/v1/health/ready`, { signal: ctrl.signal });
+      const t = setTimeout(() => ctrl.abort(), 15000); // Render wake needs ~15s per hit
+      const r = await fetch(`${base}/api/v1/health/ready`, { signal: ctrl.signal, cache: 'no-store' });
       clearTimeout(t);
-      if (r.ok) return true;
+      if (r.ok) {
+        if (attempt > 1 && !silent) showToast('Backend awake — continuing…', 3000);
+        return true;
+      }
     } catch {
-      // backend still waking — retry once
+      // network error or abort — backend still waking
     }
-    if (attempt === 0) {
-      showToast('Waking up backend (Render free tier sleeps after 15 min idle) — this can take 30–50s on first request, please keep tab open…', 8000);
-      await new Promise((res) => setTimeout(res, 3500));
+    if (Date.now() - start >= maxMs) break;
+    if (!silent) {
+      const elapsed = Math.round((Date.now() - start) / 1000);
+      showToast(`Waking backend… (${elapsed}s) — Render free tier sleeps after 15 min, first hit can take 30-50s. Keep tab open…`, 6000);
     }
+    await new Promise((res) => setTimeout(res, 2500));
   }
-  return false; // proceed anyway — POST may still succeed or will surface cold-start error
+  return false;
 }
 
 function ResultPanel({ result }) {
@@ -351,28 +360,43 @@ function NormalFoodFlow({ apiBaseUrl, showToast }) {
     if (!selectedFile) { showToast("Select a meal photo first."); return; }
     setIsRecognizing(true);
     const base = cleanBaseUrl(apiBaseUrl);
-    await wakeBackend(base, showToast);
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 90000);
-    try {
-      const compressed = await compressImage(selectedFile, 1200, 0.78);
-      const fd = new FormData(); fd.append("image", compressed);
-      const res = await fetch(`${base}/api/v1/food/recognize`, { method: "POST", body: fd, signal: controller.signal });
-      clearTimeout(timeout);
-      const payload = await res.json().catch(() => ({}));
-      if (!res.ok || !payload.success) throw new Error(payload.error?.message || `Recognition failed ${res.status}`);
-      const foods = payload.data.foods || [];
-      if (!foods.length) {
-        showToast("No food detected — add items manually below.");
-        setDetectedFoods([{ name: "", confidence: 0, portion: { size: "medium", grams: "", quantity: "" } }]);
-      } else setDetectedFoods(foods.map((f) => ({ name: f.name, confidence: f.confidence, portion: { size: "medium", grams: "", quantity: "" } })));
-    } catch (e) {
-      clearTimeout(timeout);
-      let msg = e.message;
-      if (e.name === 'AbortError') msg = `Recognition timed out after 90s — Render cold start can be slow, please retry (backend warms after first hit).`;
-      else if (e.name === 'TypeError' && String(e.message).includes('fetch')) msg = `Failed to fetch ${base}/api/v1/food/recognize — backend may be sleeping. Wait 20s, hit Refresh status, and retry.`;
-      showToast(msg, 8000);
-    } finally { setIsRecognizing(false); }
+    // Don't block recognize on full 60s wake — 20s quick wake is enough, then POST will retry
+    await wakeBackend(base, showToast, { maxMs: 20000 });
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 90000);
+      try {
+        const compressed = await compressImage(selectedFile, 1024, 0.72);
+        const fd = new FormData(); fd.append("image", compressed);
+        const res = await fetch(`${base}/api/v1/food/recognize`, { method: "POST", body: fd, signal: controller.signal, cache: 'no-store' });
+        clearTimeout(timeout);
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok || !payload.success) throw new Error(payload.error?.message || `Recognition failed ${res.status}`);
+        const foods = payload.data.foods || [];
+        if (!foods.length) {
+          showToast("No food detected — add items manually below.");
+          setDetectedFoods([{ name: "", confidence: 0, portion: { size: "medium", grams: "", quantity: "" } }]);
+        } else setDetectedFoods(foods.map((f) => ({ name: f.name, confidence: f.confidence, portion: { size: "medium", grams: "", quantity: "" } })));
+        setIsRecognizing(false);
+        return;
+      } catch (e) {
+        clearTimeout(timeout);
+        const isNet = e.name === 'TypeError' && String(e.message).includes('fetch');
+        const isAbort = e.name === 'AbortError';
+        if (attempt < 3 && isNet) {
+          showToast(`Backend waking (attempt ${attempt}/3) — retrying automatically in 4s…`, 6000);
+          await new Promise((r) => setTimeout(r, 4000));
+          await wakeBackend(base, showToast, { maxMs: 15000, silent: true });
+          continue;
+        }
+        let msg = e.message;
+        if (isAbort) msg = `Recognition timed out after 90s — Render cold start can be slow, please retry (backend warms after first hit).`;
+        else if (isNet) msg = `Failed to fetch ${base}/api/v1/food/recognize — backend still waking after ${attempt} tries. Wait 20s and tap Recognize again, or hit Refresh status.`;
+        showToast(msg, 9000);
+        break;
+      }
+    }
+    setIsRecognizing(false);
   };
 
   const updateFood = (idx, patch) => setDetectedFoods((prev) => prev.map((f, i) => i === idx ? { ...f, ...patch } : f));
@@ -396,24 +420,38 @@ function NormalFoodFlow({ apiBaseUrl, showToast }) {
     if (!foods.length) { showToast("Add at least one food item."); return; }
     setIsAnalyzing(true);
     const base = cleanBaseUrl(apiBaseUrl);
-    await wakeBackend(base, showToast);
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 70000);
-    try {
-      const res = await fetch(`${base}/api/v1/food/analyze`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ foods }), signal: controller.signal,
-      });
-      clearTimeout(timeout);
-      const payload = await res.json().catch(() => ({}));
-      if (!res.ok || !payload.success) throw new Error(payload.error?.message || `Analysis failed ${res.status}`);
-      setResult(payload.data);
-    } catch (err) {
-      clearTimeout(timeout);
-      let msg = err.message;
-      if (err.name === 'AbortError') msg = `Analysis timed out after 70s — Render free tier can be slow on cold start, please retry.`;
-      else if (err.name === 'TypeError' && String(err.message).includes('fetch')) msg = `Failed to fetch ${base}/api/v1/food/analyze — backend may be sleeping. Wait 20s and retry.`;
-      showToast(msg, 8000);
-    } finally { setIsAnalyzing(false); }
+    await wakeBackend(base, showToast, { maxMs: 20000 });
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 70000);
+      try {
+        const res = await fetch(`${base}/api/v1/food/analyze`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ foods }), signal: controller.signal, cache: 'no-store',
+        });
+        clearTimeout(timeout);
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok || !payload.success) throw new Error(payload.error?.message || `Analysis failed ${res.status}`);
+        setResult(payload.data);
+        setIsAnalyzing(false);
+        return;
+      } catch (err) {
+        clearTimeout(timeout);
+        const isNet = err.name === 'TypeError' && String(err.message).includes('fetch');
+        const isAbort = err.name === 'AbortError';
+        if (attempt < 3 && isNet) {
+          showToast(`Backend waking (attempt ${attempt}/3) — retrying automatically…`, 6000);
+          await new Promise((r) => setTimeout(r, 4000));
+          await wakeBackend(base, showToast, { maxMs: 15000, silent: true });
+          continue;
+        }
+        let msg = err.message;
+        if (isAbort) msg = `Analysis timed out after 70s — Render cold start can be slow, please retry.`;
+        else if (isNet) msg = `Failed to fetch ${base}/api/v1/food/analyze — backend still waking after ${attempt} tries. Hit Refresh status, wait 15s, retry.`;
+        showToast(msg, 9000);
+        break;
+      }
+    }
+    setIsAnalyzing(false);
   };
 
   const fileMeta = useMemo(() => selectedFile ? `${selectedFile.name} · ${formatBytes(selectedFile.size)}` : "JPEG, PNG, WebP up to 10 MB", [selectedFile]);
@@ -621,68 +659,68 @@ export default function App() {
     setAnalysisStep(0);
     const base = cleanBaseUrl(resolvedApiUrl || apiBaseUrl);
 
-    // Proactively wake Render if it slept — gives better UX than 75s silent timeout
-    await wakeBackend(base, showToast);
+    // Light wake before heavy POST — full wake is done inside retry loop
+    await wakeBackend(base, showToast, { maxMs: 20000 });
 
-    const controller = new AbortController();
-    // 90s is enough now: 1024px OCR ~5-7s + RAG 5s + upload. 110s felt slow to user even when waiting.
-    const timeout = setTimeout(() => controller.abort(), 90000);
-
-    let retriedWake = false;
-    const doFetch = async () => {
-      const compressed = await compressImage(selectedFile, 1024, 0.72);
-      setAnalysisStep(1);
-      const fd = new FormData(); fd.append("image", compressed);
-      return fetch(`${base}/api/v1/analysis`, { method: "POST", body: fd, signal: controller.signal });
-    };
-
-    try {
-      let r;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 90000);
       try {
-        r = await doFetch();
-      } catch (fetchErr) {
-        // Cold-start network failure — retry once after brief pause (Render often wakes on 2nd hit)
-        if (!retriedWake && fetchErr.name === 'TypeError' && String(fetchErr.message).includes('fetch')) {
-          retriedWake = true;
-          showToast('Backend was waking up — retrying automatically…', 7000);
-          await new Promise((res) => setTimeout(res, 4000));
-          // re-wake then retry POST
-          await wakeBackend(base, showToast);
-          r = await doFetch();
-        } else {
-          throw fetchErr;
+        const compressed = await compressImage(selectedFile, 1024, 0.72);
+        setAnalysisStep(1);
+        const fd = new FormData(); fd.append("image", compressed);
+        const r = await fetch(`${base}/api/v1/analysis`, { method: "POST", body: fd, signal: controller.signal, cache: 'no-store' });
+        clearTimeout(timeout);
+        setAnalysisStep(3);
+        const p = await r.json().catch(() => ({}));
+        if (!r.ok || !p.success) {
+          const err = new Error(p.error?.message || p.message || `Analysis failed ${r.status}`);
+          err.code = p.error?.code;
+          err.details = p.error?.details;
+          throw err;
         }
+        setResult(p.data);
+        if (p.data?.isFallback) showToast(`Analysis completed with fallback: ${p.data.fallbackReason?.message || 'AI temporarily unavailable'}`);
+        setIsAnalyzing(false);
+        return;
+      } catch (err) {
+        clearTimeout(timeout);
+        const isNet = err.name === 'TypeError' && String(err.message).includes('fetch');
+        const isAbort = err.name === 'AbortError';
+        if (attempt < 3 && isNet) {
+          showToast(`Backend waking (attempt ${attempt}/3) — retrying automatically in 4s…`, 7000);
+          await new Promise((res) => setTimeout(res, 4000));
+          await wakeBackend(base, showToast, { maxMs: 15000, silent: true });
+          continue;
+        }
+        let msg = err.message;
+        if (err.code === 'EXTRACTION_INCOMPLETE') {
+          msg = err.message + (err.details?.foundFields ? ` (found: ${err.details.foundFields})` : '') + ' — Tip: tight crop, good light, flat label. Or try Normal Food mode for meals without labels.';
+          showToast(msg, 9000);
+        } else if (isAbort) {
+          msg = `Request timed out after 90s — Render cold start was slow. Tap Analyze again (warmed now it’s ~8-12s). Tip: tighter crop + good light is fastest. (${base})`;
+          showToast(msg, 9000);
+        } else if (isNet) {
+          msg = `Failed to fetch ${base}/api/v1/analysis — backend still waking after ${attempt} tries. Hit Refresh status, wait 15s, retry.`;
+          showToast(msg, 9000);
+        } else {
+          showToast(msg);
+        }
+        break;
       }
-      clearTimeout(timeout);
-      setAnalysisStep(3);
-      const p = await r.json().catch(() => ({}));
-      if (!r.ok || !p.success) {
-        const err = new Error(p.error?.message || p.message || `Analysis failed ${r.status}`);
-        err.code = p.error?.code;
-        err.details = p.error?.details;
-        throw err;
-      }
-      setResult(p.data);
-      if (p.data?.isFallback) showToast(`Analysis completed with fallback: ${p.data.fallbackReason?.message || 'AI temporarily unavailable'}`);
-    } catch (err) {
-      clearTimeout(timeout);
-      let msg = err.message;
-      if (err.code === 'EXTRACTION_INCOMPLETE') {
-        msg = err.message + (err.details?.foundFields ? ` (found: ${err.details.foundFields})` : '') + ' — Tip: tight crop, good light, flat label. Or try Normal Food mode for meals without labels.';
-        showToast(msg, 9000);
-      } else if (err.name === 'AbortError') {
-        msg = `Request timed out after 90s — Render cold start was slow. Tap Analyze again (warmed now it’s ~8-12s). Tip: tighter crop + good light is fastest. (${base})`;
-        showToast(msg, 9000);
-      } else if (err.name === 'TypeError' && String(err.message).includes('fetch')) {
-        msg = `Failed to fetch ${base}/api/v1/analysis — backend may still be waking. Wait 20s and tap Analyze again. Tip: hit Refresh status first.`;
-        showToast(msg, 8000);
-      } else {
-        showToast(msg);
-      }
-    } finally { setIsAnalyzing(false); }
+    }
+    setIsAnalyzing(false);
   };
 
   useEffect(() => { checkBackendStatus(); }, [checkBackendStatus]);
+  // Keep Render backend warm while tab is open — ping every 9 min (free tier sleeps ~15 min)
+  useEffect(() => {
+    const id = setInterval(() => {
+      const base = cleanBaseUrl(resolvedApiUrl || DEFAULT_API_URL);
+      fetch(`${base}/api/v1/health/ready`, { cache: 'no-store' }).catch(() => {});
+    }, 9 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [resolvedApiUrl]);
   useEffect(() => () => { if (previewUrl) URL.revokeObjectURL(previewUrl); }, [previewUrl]);
 
   return (
