@@ -137,12 +137,17 @@ function Sources({ items }) {
 
 function NonFoodBanner({ code, details }) {
   const isUncertain = code === 'UNCERTAIN_FOOD';
+  const isExtraction = code === 'EXTRACTION_INCOMPLETE';
+  const bg = isExtraction ? 'linear-gradient(135deg,#fffbeb 0%,#fef3c7 100%)' : isUncertain ? 'linear-gradient(135deg,#fffbeb 0%,#fef3c7 100%)' : 'linear-gradient(135deg,#fef2f2 0%,#fee2e2 100%)';
+  const col = isExtraction ? '#92400e' : isUncertain ? '#92400e' : '#991b1b';
+  const border = isExtraction ? '#fbbf24' : isUncertain ? '#fbbf24' : '#f87171';
   return (
-    <div className="estimated-banner" style={{ borderColor: isUncertain ? '#fbbf24' : '#f87171', background: isUncertain ? 'linear-gradient(135deg,#fffbeb 0%,#fef3c7 100%)' : 'linear-gradient(135deg,#fef2f2 0%,#fee2e2 100%)', color: isUncertain ? '#92400e' : '#991b1b' }}>
+    <div className="estimated-banner" style={{ borderColor: border, background: bg, color: col }}>
       <Info size={16} />
       <span>
-        <strong>{isUncertain ? 'Unclear image' : 'Not a food item'}</strong> — {isUncertain ? 'This image could not be confidently identified as food. Please upload a clearer image containing the food or food label.' : 'This image does not appear to contain a food product. Please upload an image of food or a food nutrition label.'}
+        <strong>{isExtraction ? 'Nutrition table not readable' : isUncertain ? 'Unclear image' : 'Not a food item'}</strong> — {isExtraction ? `Could not extract nutrition (found: ${details?.foundFields || 'none'}). ${details?.suggestion || 'Try a tighter crop of the nutrition table, good lighting, flat label.'}` : isUncertain ? 'This image could not be confidently identified as food. Please upload a clearer image containing the food or food label.' : 'This image does not appear to contain a food product. Please upload an image of food or a food nutrition label.'}
         {details?.foodType ? <span className="row-meta" style={{ display: 'block', marginTop: 4, color: 'inherit', opacity: 0.85 }}>Detected: {details.foodType} · confidence {Math.round((details.confidence ?? 0)*100)}%{details.reason ? ` · ${details.reason}` : ''}</span> : null}
+        {isExtraction && details?.foundFields ? <span className="row-meta" style={{ display: 'block', marginTop: 4, color: 'inherit', opacity: 0.85 }}>Found: {details.foundFields} · confidence {Math.round((details.extractionConfidence ?? 0)*100)}%</span> : null}
       </span>
     </div>
   );
@@ -731,9 +736,11 @@ export default function App() {
           break;
         }
         if (err.code === 'EXTRACTION_INCOMPLETE') {
-          msg = err.message + (err.details?.foundFields ? ` (found: ${err.details.foundFields})` : '') + ' — Tip: tight crop, good light, flat label. Or try Normal Food mode for meals without labels.';
-          showToast(msg, 9000);
-        } else if (isAbort) {
+          setValidationError({ code: err.code, details: err.details, message: err.message });
+          setResult(null);
+          break;
+        }
+        if (isAbort) {
           msg = `Request timed out after 110s — Render free tier is slow. Try tighter crop (900px) + good light. Tap Analyze again — warmed request is ~10s. (${base})`;
           showToast(msg, 9000);
         } else if (isNet) {
@@ -843,12 +850,15 @@ export default function App() {
                   <div className="empty-icon" style={{ background: validationError.code==='NON_FOOD_DETECTED' ? '#fef2f2' : '#fffbeb', borderColor: validationError.code==='NON_FOOD_DETECTED' ? '#fecaca' : '#fde68a' }}>
                     {validationError.code==='NON_FOOD_DETECTED' ? <AlertCircle size={28} color="#dc2626" /> : <Info size={28} color="#92400e" />}
                   </div>
-                  <h2>{validationError.code==='NON_FOOD_DETECTED' ? 'Not a food item' : 'Unclear image'}</h2>
-                  <p>{validationError.code==='NON_FOOD_DETECTED' ? 'This image does not appear to contain food. Please upload a food item or a food nutrition label.' : 'This image could not be confidently identified as food. Please upload a clearer image containing the food or food label.'}</p>
+                  <h2>{validationError.code==='NON_FOOD_DETECTED' ? 'Not a food item' : validationError.code==='EXTRACTION_INCOMPLETE' ? 'Nutrition table not readable' : 'Unclear image'}</h2>
+                  <p>{validationError.code==='NON_FOOD_DETECTED' ? 'This image does not appear to contain food. Please upload a food item or a food nutrition label.' : validationError.code==='EXTRACTION_INCOMPLETE' ? `We couldn't read the nutrition table (confidence ${Math.round((validationError.details?.extractionConfidence ?? 0)*100)}%). Try a tighter crop, good lighting, and flat label — or switch to Normal Food if this is a meal without a label.` : 'This image could not be confidently identified as food. Please upload a clearer image containing the food or food label.'}</p>
                   <div style={{ marginTop: 16 }}>
                     <NonFoodBanner code={validationError.code} details={validationError.details} />
                   </div>
-                  <button className="secondary-button" style={{ marginTop: 16 }} onClick={() => setValidationError(null)}>Try another image</button>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 16, flexWrap: 'wrap', justifyContent: 'center' }}>
+                    <button className="secondary-button" onClick={() => setValidationError(null)}>Try another image</button>
+                    {validationError.code==='EXTRACTION_INCOMPLETE' && <button className="primary-button" style={{ width: 'auto', height: 40, padding: '0 14px' }} onClick={() => { setValidationError(null); setMode('normal'); }}>Try Normal Food mode</button>}
+                  </div>
                 </div>
               ) : result ? <ResultPanel result={result} /> : (
                 <div className="empty-state">

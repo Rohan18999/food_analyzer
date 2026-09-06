@@ -7,6 +7,7 @@ import { runRagAnalysis } from "./ragAnalysis.service.js";
 import { validateFoodImage } from "../ai/foodValidation/foodValidation.service.js";
 import { AppError } from "../utils/AppError.js";
 import { logger } from "../utils/logger.js";
+import config from "../config/env.js";
 
 /**
  * Full Phase 1 pipeline: OCR → structured extraction → health scoring.
@@ -45,11 +46,38 @@ export async function analyzeProductImage(imagePath) {
       throw new AppError(ocrResult.message, 422, ocrResult.error);
     }
 
-    const extracted = ocrResult.data;
+    let extracted = ocrResult.data;
 
-    // Lowered from 0.3 to 0.18 — many real labels omit fiber or have sparse ingredients but still scorable.
-    // We log details to help user understand what was missed.
+    // Vision fallback for low OCR confidence — handles small fonts, glare, or front-of-pack images
+    // where Tesseract struggles but Groq vision can read the table (reuses same vision model)
     if (extracted.extractionConfidence < 0.18) {
+      try {
+        const visionFacts = await extractNutritionViaVision(imagePath);
+        if (visionFacts && Object.keys(visionFacts).some(k => visionFacts[k]?.amount != null)) {
+          const visionCount = Object.keys(visionFacts).filter(k => visionFacts[k]?.amount != null).length;
+          logger.info('Vision fallback extracted nutrition', { visionCount, ocrConfidence: extracted.extractionConfidence });
+          // Prefer vision for missing fields, keep OCR ingredients/productName
+          const mergedFacts = { ...extracted.nutritionFacts };
+          for (const [k, v] of Object.entries(visionFacts)) {
+            if (v?.amount != null && mergedFacts[k] == null) mergedFacts[k] = v;
+          }
+          // Recompute confidence with merged facts
+          const anyFields = ['calories', 'totalFat', 'saturatedFat', 'sodium', 'totalCarbohydrates', 'dietaryFiber', 'totalSugars', 'addedSugars', 'protein'].filter(k => {
+            const val = mergedFacts[k];
+            return val != null && (typeof val === 'object' ? val.amount != null : true);
+          }).length;
+          const boostedConfidence = Math.min(0.35, extracted.extractionConfidence + (anyFields >= 2 ? 0.15 : 0) + (visionCount >= 3 ? 0.1 : 0));
+          if (anyFields >= 2) {
+            extracted = { ...extracted, nutritionFacts: mergedFacts, extractionConfidence: Math.max(extracted.extractionConfidence, boostedConfidence), ocrVariant: `${extracted.ocrVariant}+vision` };
+            logger.info('Using vision-merged nutrition', { newConfidence: extracted.extractionConfidence, anyFields });
+          }
+        }
+      } catch (e) {
+        logger.warn('Vision fallback failed, proceeding with OCR result', { error: e.message });
+      }
+    }
+
+    if (extracted.extractionConfidence < 0.12) {
       const found = Object.entries(extracted.nutritionFacts)
         .filter(([, v]) => v != null && (typeof v === 'object' ? v.amount != null : true))
         .map(([k]) => k)
@@ -213,6 +241,87 @@ export async function analyzeProductImage(imagePath) {
       });
     }
   }
+}
+
+async function extractNutritionViaVision(imagePath) {
+  if (!config.groq.apiKey) return null;
+  const modelCandidates = [
+    config.groq.visionModel || 'meta-llama/llama-4-maverick-17b-128e-instruct',
+    'meta-llama/llama-4-maverick-17b-128e-instruct',
+    'meta-llama/llama-4-scout-17b-16e-instruct',
+  ];
+  const uniqueModels = [...new Set(modelCandidates)];
+  const buf = fs.readFileSync(imagePath);
+  const b64 = buf.toString('base64');
+  const mime = imagePath.toLowerCase().endsWith('.png') ? 'image/png' : imagePath.toLowerCase().endsWith('.webp') ? 'image/webp' : 'image/jpeg';
+  const dataUrl = `data:${mime};base64,${b64}`;
+  const sysPrompt = `Extract nutrition facts from this food label image. Return ONLY JSON: {"calories": number|null, "sodium":{"amount":number,"unit":"mg"}|null, "totalSugars":{"amount":number,"unit":"g"}|null, "addedSugars":{"amount":number,"unit":"g"}|null, "saturatedFat":{"amount":number,"unit":"g"}|null, "protein":{"amount":number,"unit":"g"}|null, "dietaryFiber":{"amount":number,"unit":"g"}|null, "totalFat":{"amount":number,"unit":"g"}|null}. Use null if not visible. No extra keys.`;
+  const userText = `Read the nutrition table and return JSON as specified.`;
+  for (const model of uniqueModels) {
+    try {
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), 10000);
+      const res = await fetch(`${config.groq.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.groq.apiKey}`, 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          model,
+          temperature: 0.1,
+          max_tokens: 500,
+          response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: sysPrompt },
+            { role: 'user', content: [{ type: 'text', text: userText }, { type: 'image_url', image_url: { url: dataUrl } }] },
+          ],
+        }),
+      });
+      clearTimeout(t);
+      if (!res.ok) {
+        const txt = await res.text();
+        if (txt.includes('json_validate_failed')) {
+          // retry without json mode
+          const ctrl2 = new AbortController();
+          const t2 = setTimeout(() => ctrl2.abort(), 10000);
+          const res2 = await fetch(`${config.groq.baseUrl}/chat/completions`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${config.groq.apiKey}`, 'Content-Type': 'application/json' },
+            signal: ctrl2.signal,
+            body: JSON.stringify({
+              model,
+              temperature: 0.1,
+              max_tokens: 500,
+              messages: [
+                { role: 'system', content: sysPrompt },
+                { role: 'user', content: [{ type: 'text', text: userText }, { type: 'image_url', image_url: { url: dataUrl } }] },
+              ],
+            }),
+          });
+          clearTimeout(t2);
+          if (!res2.ok) continue;
+          const j2 = await res2.json();
+          const c2 = j2.choices?.[0]?.message?.content || '';
+          const m2 = c2.match(/\{[\s\S]*\}/);
+          if (!m2) continue;
+          try {
+            const p2 = JSON.parse(m2[0]);
+            return p2;
+          } catch { continue; }
+        }
+        if (res.status === 404 && txt.includes('model')) continue;
+        continue;
+      }
+      const j = await res.json();
+      const c = j.choices?.[0]?.message?.content || '';
+      const m = c.match(/\{[\s\S]*\}/);
+      if (!m) continue;
+      const p = JSON.parse(m[0]);
+      return p;
+    } catch {
+      continue;
+    }
+  }
+  return null;
 }
 
 function buildPackagedFallback({ product, healthScore, verdict, scoreBreakdown, error }) {

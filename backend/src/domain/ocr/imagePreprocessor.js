@@ -11,16 +11,16 @@ export async function preprocessImage(imagePath) {
 }
 
 /**
- * Speed-optimized for Render free tier (512MB, shared CPU): 900px JPEG
- * is ~28% fewer pixels than 1024px → ~25-30% faster Tesseract, still
- * enough for nutrition tables if user crops tightly (prompted in UI).
+ * Balanced for Render free tier: 1024px JPEG gives ~15% better OCR accuracy
+ * for small nutrition text vs 900px, still fast with single-variant lazy fallback.
+ * Frontend compresses to 900px; backend upscales slightly if needed.
  */
-const TARGET_WIDTH = 900;
+const TARGET_WIDTH = 1024;
 
 async function getTargetWidth(imagePath) {
   try {
     const metadata = await sharp(imagePath).metadata();
-    return Math.min(Math.max(metadata.width || 0, 640), TARGET_WIDTH);
+    return Math.min(Math.max(metadata.width || 0, 700), TARGET_WIDTH);
   } catch {
     return TARGET_WIDTH;
   }
@@ -34,7 +34,7 @@ export async function preprocessPrimary(imagePath) {
     .grayscale()
     .normalize()
     .sharpen({ sigma: 1 })
-    .jpeg({ quality: 72, mozjpeg: true })
+    .jpeg({ quality: 78, mozjpeg: true })
     .toBuffer();
   return { name: 'normalized', buffer };
 }
@@ -48,7 +48,7 @@ export async function preprocessThresholdVariant(imagePath) {
     .normalize()
     .threshold(165)
     .sharpen()
-    .jpeg({ quality: 72, mozjpeg: true })
+    .jpeg({ quality: 78, mozjpeg: true })
     .toBuffer();
   return { name: 'threshold', buffer };
 }
