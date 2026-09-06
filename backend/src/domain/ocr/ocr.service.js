@@ -40,44 +40,69 @@ export async function extractProductFromImage(imagePath) {
   let bestExtraction = null;
   let bestDurationMs = 0;
   try {
-    const attempts = imageVariants.flatMap((variant) => [
-      { ...variant, pageSegMode: "6" },
-      { ...variant, pageSegMode: "11" },
-    ]);
+    // Fast mode: only PSM 6 (Assumes uniform block of text) — most reliable for nutrition labels.
+    // Reduces from 6 attempts (3 variants × 2 PSM) to 2 attempts on Render free tier.
+    const attempts = imageVariants.map((variant) => ({ ...variant, pageSegMode: "6" }));
 
     for (const variant of attempts) {
-      const result = await Tesseract.recognize(variant.buffer, "eng", {
-        ...TESSERACT_CONFIG,
-        tessedit_pageseg_mode: variant.pageSegMode,
-        logger: (m) => {
-          if (m.status === "recognizing text") {
-            logger.debug("OCR progress", {
-              variant: variant.name,
-              psm: variant.pageSegMode,
-              progress: m.progress,
-            });
-          }
-        },
-      });
+      try {
+        // Per-variant timeout — prevents hanging on Render free tier (512MB)
+        const ocrPromise = Tesseract.recognize(variant.buffer, "eng", {
+          ...TESSERACT_CONFIG,
+          tessedit_pageseg_mode: variant.pageSegMode,
+          logger: (m) => {
+            if (m.status === "recognizing text") {
+              logger.debug("OCR progress", {
+                variant: variant.name,
+                psm: variant.pageSegMode,
+                progress: m.progress,
+              });
+            }
+          },
+        });
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('OCR variant timeout after 25s')), 25000)
+        );
+        const result = await Promise.race([ocrPromise, timeoutPromise]);
 
-      const candidate = buildExtraction(result.data);
-      const candidateScore = scoreExtractionCandidate(candidate);
+        const candidate = buildExtraction(result.data);
+        const candidateScore = scoreExtractionCandidate(candidate);
 
-      logger.info("OCR variant complete", {
-        variant: variant.name,
-        psm: variant.pageSegMode,
-        score: candidateScore,
-        confidence: candidate.extractionConfidence,
-      });
+        logger.info("OCR variant complete", {
+          variant: variant.name,
+          psm: variant.pageSegMode,
+          score: candidateScore,
+          confidence: candidate.extractionConfidence,
+        });
 
-      if (!bestExtraction || candidateScore > bestExtraction.candidateScore) {
-        bestExtraction = {
-          ...candidate,
-          ocrVariant: `${variant.name}:psm${variant.pageSegMode}`,
-          candidateScore,
-        };
-        bestDurationMs = Date.now() - start;
+        if (!bestExtraction || candidateScore > bestExtraction.candidateScore) {
+          bestExtraction = {
+            ...candidate,
+            ocrVariant: `${variant.name}:psm${variant.pageSegMode}`,
+            candidateScore,
+          };
+          bestDurationMs = Date.now() - start;
+        }
+
+        // Early exit: if we already have high-quality extraction, skip remaining variants
+        if (bestExtraction.candidateScore >= 45 && bestExtraction.extractionConfidence >= 0.7) {
+          logger.info("OCR early exit — high confidence achieved", {
+            variant: bestExtraction.ocrVariant,
+            score: bestExtraction.candidateScore,
+          });
+          break;
+        }
+      } catch (variantError) {
+        logger.warn("OCR variant failed, continuing to next", {
+          variant: variant.name,
+          psm: variant.pageSegMode,
+          error: variantError.message,
+        });
       }
+    }
+
+    if (!bestExtraction) {
+      throw new Error('All OCR variants failed or timed out');
     }
   } catch (error) {
     logger.error("OCR failed", { error: error.message });

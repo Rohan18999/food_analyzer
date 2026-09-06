@@ -21,7 +21,8 @@ export async function preprocessImage(imagePath) {
 export async function preprocessImageVariants(imagePath) {
   const base = sharp(imagePath).rotate();
   const metadata = await base.metadata();
-  const targetWidth = Math.max(metadata.width || 0, 2400);
+  // Smaller width = faster OCR on Render free tier (512MB). 1600px is enough for nutrition tables.
+  const targetWidth = Math.min(Math.max(metadata.width || 0, 1400), 1800);
 
   const common = () =>
     sharp(imagePath)
@@ -41,17 +42,10 @@ export async function preprocessImageVariants(imagePath) {
       .sharpen()
       .png()
       .toBuffer(),
-    common()
-      .linear(1.2, -12)
-      .median(1)
-      .sharpen({ sigma: 1.2 })
-      .png()
-      .toBuffer(),
   ]);
 
   return [
     { name: 'normalized', buffer: variants[0] },
     { name: 'threshold', buffer: variants[1] },
-    { name: 'contrast', buffer: variants[2] },
   ];
 }

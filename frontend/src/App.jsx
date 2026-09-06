@@ -308,9 +308,12 @@ function NormalFoodFlow({ apiBaseUrl, showToast }) {
     if (!selectedFile) { showToast("Select a meal photo first."); return; }
     setIsRecognizing(true);
     const base = cleanBaseUrl(apiBaseUrl);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 60000);
     try {
       const fd = new FormData(); fd.append("image", selectedFile);
-      const res = await fetch(`${base}/api/v1/food/recognize`, { method: "POST", body: fd });
+      const res = await fetch(`${base}/api/v1/food/recognize`, { method: "POST", body: fd, signal: controller.signal });
+      clearTimeout(timeout);
       const payload = await res.json().catch(() => ({}));
       if (!res.ok || !payload.success) throw new Error(payload.error?.message || `Recognition failed ${res.status}`);
       const foods = payload.data.foods || [];
@@ -319,7 +322,10 @@ function NormalFoodFlow({ apiBaseUrl, showToast }) {
         setDetectedFoods([{ name: "", confidence: 0, portion: { size: "medium", grams: "", quantity: "" } }]);
       } else setDetectedFoods(foods.map((f) => ({ name: f.name, confidence: f.confidence, portion: { size: "medium", grams: "", quantity: "" } })));
     } catch (e) {
-      const msg = e.name === 'TypeError' && String(e.message).includes('fetch') ? `Failed to fetch ${base}/api/v1/food/recognize — backend may be sleeping. Wait 30s and retry.` : e.message;
+      clearTimeout(timeout);
+      let msg = e.message;
+      if (e.name === 'AbortError') msg = `Recognition timed out after 60s — try a smaller image or retry.`;
+      else if (e.name === 'TypeError' && String(e.message).includes('fetch')) msg = `Failed to fetch ${base}/api/v1/food/recognize — backend may be sleeping. Wait 30s and retry.`;
       showToast(msg);
     } finally { setIsRecognizing(false); }
   };
@@ -345,15 +351,21 @@ function NormalFoodFlow({ apiBaseUrl, showToast }) {
     if (!foods.length) { showToast("Add at least one food item."); return; }
     setIsAnalyzing(true);
     const base = cleanBaseUrl(apiBaseUrl);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 45000);
     try {
       const res = await fetch(`${base}/api/v1/food/analyze`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ foods }),
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ foods }), signal: controller.signal,
       });
+      clearTimeout(timeout);
       const payload = await res.json().catch(() => ({}));
       if (!res.ok || !payload.success) throw new Error(payload.error?.message || `Analysis failed ${res.status}`);
       setResult(payload.data);
     } catch (err) {
-      const msg = err.name === 'TypeError' && String(err.message).includes('fetch') ? `Failed to fetch ${base}/api/v1/food/analyze — backend may be sleeping. Try again.` : err.message;
+      clearTimeout(timeout);
+      let msg = err.message;
+      if (err.name === 'AbortError') msg = `Analysis timed out after 45s — please retry.`;
+      else if (err.name === 'TypeError' && String(err.message).includes('fetch')) msg = `Failed to fetch ${base}/api/v1/food/analyze — backend may be sleeping. Try again.`;
       showToast(msg);
     } finally { setIsAnalyzing(false); }
   };
@@ -548,14 +560,21 @@ export default function App() {
     if (!selectedFile) { showToast("Select a product image first."); return; }
     setIsAnalyzing(true);
     const base = cleanBaseUrl(resolvedApiUrl || apiBaseUrl);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 90000);
     try {
       const fd = new FormData(); fd.append("image", selectedFile);
-      const r = await fetch(`${base}/api/v1/analysis`, { method: "POST", body: fd });
+      const r = await fetch(`${base}/api/v1/analysis`, { method: "POST", body: fd, signal: controller.signal });
+      clearTimeout(timeout);
       const p = await r.json().catch(() => ({}));
       if (!r.ok || !p.success) throw new Error(p.error?.message || p.message || `Analysis failed ${r.status}`);
       setResult(p.data);
+      if (p.data?.isFallback) showToast(`Analysis completed with fallback: ${p.data.fallbackReason?.message || 'AI temporarily unavailable'}`);
     } catch (err) {
-      const msg = err.name === 'TypeError' && err.message.includes('fetch') ? `Failed to fetch ${base}/api/v1/analysis — backend may be sleeping (Render free tier cold start takes ~30s). Try again in 30s and check status is Ready.` : err.message;
+      clearTimeout(timeout);
+      let msg = err.message;
+      if (err.name === 'AbortError') msg = `Request timed out after 90s — Render free tier may be cold starting or image is large. Try a clearer, smaller crop and retry. (${base})`;
+      else if (err.name === 'TypeError' && String(err.message).includes('fetch')) msg = `Failed to fetch ${base}/api/v1/analysis — backend may be sleeping. Wait 30s and retry. Check status is Ready.`;
       showToast(msg);
     } finally { setIsAnalyzing(false); }
   };

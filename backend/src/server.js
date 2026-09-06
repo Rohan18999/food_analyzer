@@ -47,6 +47,12 @@ export function createApp() {
   return app;
 }
 
+export function setServerTimeout(server, ms = 90000) {
+  server.setTimeout(ms);
+  server.headersTimeout = ms + 5000;
+  server.requestTimeout = ms;
+}
+
 export function startServer(app) {
   const server = app.listen(config.port, () => {
     logger.info(`Server running on port ${config.port}`, {
@@ -62,6 +68,7 @@ export function startServer(app) {
       logger.warn('MONGODB_URI not set — RAG retrieval disabled, analyses will run without knowledge base');
     }
   });
+  setServerTimeout(server, 90000);
 
   server.on('error', (error) => {
     if (error.code === 'EADDRINUSE') {
