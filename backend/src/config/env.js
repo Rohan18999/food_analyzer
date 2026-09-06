@@ -6,10 +6,24 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
+function resolveMongoUri(raw) {
+  if (!raw) return null;
+  const uri = raw.trim();
+  // Treat placeholder/example values as not configured to avoid ENOTFOUND noise on Render
+  if (
+    uri.includes('user:password') ||
+    uri.includes('cluster.mongodb.net/food_health_analyzer') && uri.includes('mongodb+srv://user') ||
+    uri === 'mongodb+srv://user:password@cluster.mongodb.net/food_health_analyzer'
+  ) {
+    return null;
+  }
+  return uri;
+}
+
 const config = {
   nodeEnv: process.env.NODE_ENV || 'development',
   port: parseInt(process.env.PORT || '3002', 10),
-  mongodbUri: process.env.MONGODB_URI || null,
+  mongodbUri: resolveMongoUri(process.env.MONGODB_URI),
   maxFileSizeMb: parseInt(process.env.MAX_FILE_SIZE_MB || '10', 10),
   uploadDir: process.env.UPLOAD_DIR || './uploads',
 

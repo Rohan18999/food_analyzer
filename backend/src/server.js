@@ -14,6 +14,31 @@ export function createApp() {
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ extended: true }));
 
+  // Root and health probes — Render hits HEAD/GET / and /health
+  const rootHandler = (req, res) => {
+    res.status(200).json({
+      success: true,
+      service: 'food-health-analyzer-backend',
+      status: 'live',
+      version: 'v2',
+      timestamp: new Date().toISOString(),
+      endpoints: {
+        health: '/api/v1/health',
+        ready: '/api/v1/health/ready',
+        analysis: 'POST /api/v1/analysis',
+        foodRecognize: 'POST /api/v1/food/recognize',
+        foodAnalyze: 'POST /api/v1/food/analyze',
+        supportedFoods: 'GET /api/v1/food/supported-foods',
+      },
+      docs: 'GET /api/v1/health for detailed status',
+    });
+  };
+  app.get('/', rootHandler);
+  app.head('/', (req, res) => res.status(200).end());
+  app.get('/health', (req, res) => res.redirect('/api/v1/health/ready'));
+  app.get('/api', rootHandler);
+  app.get('/api/v1', rootHandler);
+
   app.use('/api/v1', routes);
 
   app.use(notFoundHandler);
