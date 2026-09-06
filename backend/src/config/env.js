@@ -16,6 +16,7 @@ const config = {
   groq: {
     apiKey: process.env.GROQ_API_KEY || null,
     model: process.env.GROQ_MODEL || 'llama-3.1-8b-instant',
+    visionModel: process.env.GROQ_VISION_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct',
     baseUrl: process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1',
   },
 
