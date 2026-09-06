@@ -8,9 +8,9 @@ import config from '../config/env.js';
  * Now resilient: throws original AppError with cause so callers can fallback.
  */
 export async function runRagAnalysis({ product, healthScore, verdict, scoreBreakdown }) {
-  if (!config.groq.apiKey) {
+  if (!config.openrouter.apiKey) {
     throw new AppError(
-      'Groq API key not configured. Set GROQ_API_KEY in backend/.env to enable AI explanations. Deterministic score is still calculated.',
+      'OpenRouter API key not configured. Set OPENROUTER_API_KEY in backend/.env to enable AI explanations. Deterministic score is still calculated.',
       503,
       'LLM_NOT_CONFIGURED'
     );

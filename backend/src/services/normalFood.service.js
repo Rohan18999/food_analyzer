@@ -193,7 +193,7 @@ export async function analyzeNormalFood({ foods, portion: globalPortion }) {
 
   let llmOutput;
   try {
-    if (!config.groq.apiKey) throw new Error('GROQ_API_KEY not configured');
+    if (!config.openrouter.apiKey) throw new Error('OPENROUTER_API_KEY not configured');
     const groqPromise = generateGroqJson({
       systemPrompt: NORMAL_FOOD_SYSTEM_PROMPT,
       userPrompt,
