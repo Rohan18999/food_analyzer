@@ -27,8 +27,9 @@ import {
   Salad,
 } from "lucide-react";
 
-const DEFAULT_API_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:3002";
-function cleanBaseUrl(url) { return url.replace(/\/$/, ""); }
+const RENDER_API_URL = "https://food-analyzer-b7u4.onrender.com";
+const DEFAULT_API_URL = import.meta.env.VITE_API_BASE_URL || RENDER_API_URL;
+function cleanBaseUrl(url) { return String(url || "").replace(/\/$/, ""); }
 function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
@@ -306,9 +307,10 @@ function NormalFoodFlow({ apiBaseUrl, showToast }) {
   const recognize = async () => {
     if (!selectedFile) { showToast("Select a meal photo first."); return; }
     setIsRecognizing(true);
+    const base = cleanBaseUrl(apiBaseUrl);
     try {
       const fd = new FormData(); fd.append("image", selectedFile);
-      const res = await fetch(`${cleanBaseUrl(apiBaseUrl)}/api/v1/food/recognize`, { method: "POST", body: fd });
+      const res = await fetch(`${base}/api/v1/food/recognize`, { method: "POST", body: fd });
       const payload = await res.json().catch(() => ({}));
       if (!res.ok || !payload.success) throw new Error(payload.error?.message || `Recognition failed ${res.status}`);
       const foods = payload.data.foods || [];
@@ -316,7 +318,10 @@ function NormalFoodFlow({ apiBaseUrl, showToast }) {
         showToast("No food detected — add items manually below.");
         setDetectedFoods([{ name: "", confidence: 0, portion: { size: "medium", grams: "", quantity: "" } }]);
       } else setDetectedFoods(foods.map((f) => ({ name: f.name, confidence: f.confidence, portion: { size: "medium", grams: "", quantity: "" } })));
-    } catch (e) { showToast(e.message); } finally { setIsRecognizing(false); }
+    } catch (e) {
+      const msg = e.name === 'TypeError' && String(e.message).includes('fetch') ? `Failed to fetch ${base}/api/v1/food/recognize — backend may be sleeping. Wait 30s and retry.` : e.message;
+      showToast(msg);
+    } finally { setIsRecognizing(false); }
   };
 
   const updateFood = (idx, patch) => setDetectedFoods((prev) => prev.map((f, i) => i === idx ? { ...f, ...patch } : f));
@@ -339,14 +344,18 @@ function NormalFoodFlow({ apiBaseUrl, showToast }) {
     }));
     if (!foods.length) { showToast("Add at least one food item."); return; }
     setIsAnalyzing(true);
+    const base = cleanBaseUrl(apiBaseUrl);
     try {
-      const res = await fetch(`${cleanBaseUrl(apiBaseUrl)}/api/v1/food/analyze`, {
+      const res = await fetch(`${base}/api/v1/food/analyze`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ foods }),
       });
       const payload = await res.json().catch(() => ({}));
       if (!res.ok || !payload.success) throw new Error(payload.error?.message || `Analysis failed ${res.status}`);
       setResult(payload.data);
-    } catch (err) { showToast(err.message); } finally { setIsAnalyzing(false); }
+    } catch (err) {
+      const msg = err.name === 'TypeError' && String(err.message).includes('fetch') ? `Failed to fetch ${base}/api/v1/food/analyze — backend may be sleeping. Try again.` : err.message;
+      showToast(msg);
+    } finally { setIsAnalyzing(false); }
   };
 
   const fileMeta = useMemo(() => selectedFile ? `${selectedFile.name} · ${formatBytes(selectedFile.size)}` : "JPEG, PNG, WebP up to 10 MB", [selectedFile]);
@@ -455,7 +464,8 @@ function NormalFoodFlow({ apiBaseUrl, showToast }) {
 }
 
 export default function App() {
-  const [apiBaseUrl] = useState(DEFAULT_API_URL);
+  const [apiBaseUrl, setApiBaseUrl] = useState(DEFAULT_API_URL);
+  const [resolvedApiUrl, setResolvedApiUrl] = useState(DEFAULT_API_URL);
   const [backendStatus, setBackendStatus] = useState({ status: "", label: "Checking" });
   const [mode, setMode] = useState("packaged");
   const [selectedFile, setSelectedFile] = useState(null);
@@ -471,20 +481,33 @@ export default function App() {
 
   const fileMeta = useMemo(() => selectedFile ? `${selectedFile.name} · ${formatBytes(selectedFile.size)}` : "JPEG, PNG, WebP up to 10 MB", [selectedFile]);
 
-  const showToast = useCallback((m) => { setToast(m); setTimeout(() => setToast(""), 5000); }, []);
+  const showToast = useCallback((m) => { setToast(m); setTimeout(() => setToast(""), 6000); }, []);
   const checkBackendStatus = useCallback(async () => {
     setBackendStatus({ status: "", label: "Checking" });
-    const candidates = [cleanBaseUrl(apiBaseUrl), 'http://localhost:3002', 'http://localhost:3001'];
-    const uniq = [...new Set(candidates)];
+    const candidates = [
+      cleanBaseUrl(apiBaseUrl),
+      cleanBaseUrl(RENDER_API_URL),
+      'http://localhost:3002',
+      'http://localhost:3001',
+    ];
+    const uniq = [...new Set(candidates.filter(Boolean))];
     for (const base of uniq) {
       try {
-        const r = await fetch(`${base}/api/v1/health/ready`, { signal: AbortSignal.timeout(3000) });
+        const controller = new AbortController();
+        const t = setTimeout(() => controller.abort(), 4000);
+        const r = await fetch(`${base}/api/v1/health/ready`, { signal: controller.signal });
+        clearTimeout(t);
         if (!r.ok) continue;
         const payload = await r.json();
         const groqReady = payload?.services?.groq === "configured";
         setBackendStatus({ status: groqReady ? "ready" : "error", label: groqReady ? "Ready" : "No Groq key" });
+        setResolvedApiUrl(base);
+        // if discovered URL differs from configured, remember it
+        if (base !== cleanBaseUrl(apiBaseUrl)) setApiBaseUrl(base);
         return;
-      } catch {}
+      } catch (e) {
+        // continue to next candidate
+      }
     }
     setBackendStatus({ status: "error", label: "Offline" });
   }, [apiBaseUrl]);
@@ -524,13 +547,17 @@ export default function App() {
     e.preventDefault();
     if (!selectedFile) { showToast("Select a product image first."); return; }
     setIsAnalyzing(true);
+    const base = cleanBaseUrl(resolvedApiUrl || apiBaseUrl);
     try {
       const fd = new FormData(); fd.append("image", selectedFile);
-      const r = await fetch(`${cleanBaseUrl(apiBaseUrl)}/api/v1/analysis`, { method: "POST", body: fd });
+      const r = await fetch(`${base}/api/v1/analysis`, { method: "POST", body: fd });
       const p = await r.json().catch(() => ({}));
       if (!r.ok || !p.success) throw new Error(p.error?.message || p.message || `Analysis failed ${r.status}`);
       setResult(p.data);
-    } catch (err) { showToast(err.message); } finally { setIsAnalyzing(false); }
+    } catch (err) {
+      const msg = err.name === 'TypeError' && err.message.includes('fetch') ? `Failed to fetch ${base}/api/v1/analysis — backend may be sleeping (Render free tier cold start takes ~30s). Try again in 30s and check status is Ready.` : err.message;
+      showToast(msg);
+    } finally { setIsAnalyzing(false); }
   };
 
   useEffect(() => { checkBackendStatus(); }, [checkBackendStatus]);
@@ -576,6 +603,7 @@ export default function App() {
               </button>
             </div>
 
+            <div className="row-meta" style={{ fontSize: '0.78rem', marginTop: 4, opacity: 0.7 }}>API: {cleanBaseUrl(resolvedApiUrl)}</div>
             {mode === "packaged" ? (
               <form className="upload-form" onSubmit={submitAnalysis}>
                 <div className="upload-options">
@@ -605,7 +633,7 @@ export default function App() {
               </form>
             ) : (
               <div className="upload-form" style={{ gap: 14 }}>
-                <NormalFoodFlow apiBaseUrl={apiBaseUrl} showToast={showToast} />
+                <NormalFoodFlow apiBaseUrl={resolvedApiUrl} showToast={showToast} />
               </div>
             )}
           </div>
