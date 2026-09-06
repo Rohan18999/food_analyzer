@@ -46,13 +46,34 @@ export async function analyzeProductImage(imagePath) {
     };
 
     const ragStart = Date.now();
-    const ragResult = await runRagAnalysis({
-      product: productPayload,
-      healthScore: scoringResult.healthScore,
-      verdict: scoringResult.verdict,
-      scoreBreakdown: scoringResult.scoreBreakdown,
-    });
-    const ragDurationMs = Date.now() - ragStart;
+    let ragResult;
+    let ragDurationMs = 0;
+    let ragFallback = false;
+    let ragError = null;
+    try {
+      ragResult = await runRagAnalysis({
+        product: productPayload,
+        healthScore: scoringResult.healthScore,
+        verdict: scoringResult.verdict,
+        scoreBreakdown: scoringResult.scoreBreakdown,
+      });
+      ragDurationMs = Date.now() - ragStart;
+    } catch (error) {
+      ragDurationMs = Date.now() - ragStart;
+      ragError = error;
+      ragFallback = true;
+      logger.warn('RAG analysis unavailable, using deterministic fallback', {
+        code: error.code,
+        message: error.message,
+      });
+      ragResult = buildPackagedFallback({
+        product: productPayload,
+        healthScore: scoringResult.healthScore,
+        verdict: scoringResult.verdict,
+        scoreBreakdown: scoringResult.scoreBreakdown,
+        error,
+      });
+    }
 
     const product = await createProduct({
       ...productPayload,
@@ -99,12 +120,15 @@ export async function analyzeProductImage(imagePath) {
       retrievedSources: ragResult.retrievedSources,
       extractionConfidence: extracted.extractionConfidence,
       processingTimeMs: totalDurationMs,
+      isFallback: ragFallback || false,
+      fallbackReason: ragError ? { code: ragError.code || 'LLM_ERROR', message: ragError.message } : null,
     };
 
     logger.info("Analysis complete", {
       analysisId: response.analysisId,
       healthScore: response.healthScore,
       verdict: response.verdict,
+      fallback: ragFallback,
     });
 
     return response;
@@ -116,4 +140,45 @@ export async function analyzeProductImage(imagePath) {
       });
     }
   }
+}
+
+function buildPackagedFallback({ product, healthScore, verdict, scoreBreakdown, error }) {
+  const reasons = [];
+  if (scoreBreakdown.sodium?.penalty) reasons.push(`high sodium (${product.nutritionFacts.sodium?.amount ?? '?'}mg)`);
+  if (scoreBreakdown.sugar?.penalty) reasons.push(`added sugar (${product.nutritionFacts.addedSugars?.amount ?? product.nutritionFacts.totalSugars?.amount ?? '?'}g)`);
+  if (scoreBreakdown.saturatedFat?.penalty) reasons.push(`saturated fat (${product.nutritionFacts.saturatedFat?.amount ?? '?'}g)`);
+  if (scoreBreakdown.ingredientQuality?.penalty) reasons.push(`ingredient quality flags`);
+  if (scoreBreakdown.protein?.bonus) reasons.push(`good protein`);
+  if (scoreBreakdown.fiber?.bonus) reasons.push(`fiber content`);
+
+  const isMissingKey = error?.code === 'LLM_NOT_CONFIGURED';
+  const explanation = isMissingKey
+    ? `${product.productName || 'This product'} scored ${healthScore}/100 (${verdict}) based on deterministic nutrition scoring. ${reasons.length ? `Key factors: ${reasons.join(', ')}.` : ''} AI explanation is unavailable — set GROQ_API_KEY in backend/.env to enable Groq-powered insights. Score remains accurate.`
+    : `${product.productName || 'This product'} scored ${healthScore}/100 (${verdict}). ${reasons.length ? `Key factors: ${reasons.join(', ')}.` : ''} AI explanation temporarily unavailable (${error?.message || 'LLM error'}) — showing deterministic summary. Try again shortly.`;
+
+  const pros = [];
+  const cons = [];
+  if (scoreBreakdown.protein?.bonus) pros.push('Good protein content');
+  if (scoreBreakdown.fiber?.bonus) pros.push('Contains dietary fiber');
+  if (!scoreBreakdown.sodium?.penalty && !scoreBreakdown.sugar?.penalty) pros.push('No major sodium/sugar penalty');
+  if (scoreBreakdown.sodium?.penalty) cons.push(`High sodium — ${product.nutritionFacts.sodium?.amount ?? ''}mg per serving exceeds baseline`);
+  if (scoreBreakdown.sugar?.penalty) cons.push(`High sugar — consider lower-sugar alternatives`);
+  if (scoreBreakdown.saturatedFat?.penalty) cons.push(`Saturated fat elevated — check ingredient oils/fats`);
+  if (scoreBreakdown.ingredientQuality?.penalty) cons.push(`Contains flagged ingredients — see ingredient quality section`);
+  if (!pros.length) pros.push('Score calculated — see breakdown for details');
+  if (!cons.length) cons.push('No major concerns flagged by deterministic scoring');
+
+  return {
+    llmOutput: {
+      explanation,
+      evidenceBasedRisks: cons.slice(0, 3),
+      pros,
+      cons,
+      alternatives: [{ name: 'Choose lower-sodium / lower-sugar variant', reason: 'Similar product with better nutrition per 100g often improves score by 10-15 points.' }],
+      citedSourceTitles: [],
+    },
+    retrievedSources: [],
+    searchQuery: '',
+    retrievedDocIds: [],
+  };
 }

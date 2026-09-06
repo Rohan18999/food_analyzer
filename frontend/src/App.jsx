@@ -134,6 +134,23 @@ function Sources({ items }) {
   );
 }
 
+function FallbackBanner({ reason }) {
+  if (!reason) return null;
+  const isMissingKey = reason.code === 'LLM_NOT_CONFIGURED';
+  return (
+    <div className="estimated-banner" style={{ borderColor: isMissingKey ? '#fbbf24' : '#f87171', background: isMissingKey ? 'linear-gradient(135deg,#fffbeb 0%,#fef3c7 100%)' : 'linear-gradient(135deg,#fef2f2 0%,#fee2e2 100%)', color: isMissingKey ? '#92400e' : '#991b1b' }}>
+      <Info size={16} />
+      <span>
+        {isMissingKey ? (
+          <><strong>AI explanation unavailable</strong> — GROQ_API_KEY not set. Deterministic score shown. Add it to <code>backend/.env</code> and restart to enable Groq insights.</>
+        ) : (
+          <><strong>AI fallback active</strong> — {reason.message || 'Groq temporarily unavailable.'} Score is still accurate.</>
+        )}
+      </span>
+    </div>
+  );
+}
+
 function ResultPanel({ result }) {
   const score = Number(result.healthScore || 0);
   const facts = result.product?.nutritionFacts || result.nutritionFacts || {};
@@ -155,6 +172,7 @@ function ResultPanel({ result }) {
 
   return (
     <section className="result-content" aria-live="polite">
+      {(result.isFallback || result.fallbackReason) && <FallbackBanner reason={result.fallbackReason} />}
       {isEstimated && (
         <div className="estimated-banner">
           <Info size={16} />
@@ -456,12 +474,19 @@ export default function App() {
   const showToast = useCallback((m) => { setToast(m); setTimeout(() => setToast(""), 5000); }, []);
   const checkBackendStatus = useCallback(async () => {
     setBackendStatus({ status: "", label: "Checking" });
-    try {
-      const r = await fetch(`${cleanBaseUrl(apiBaseUrl)}/api/v1/health/ready`);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const payload = await r.json();
-      setBackendStatus({ status: payload?.services?.groq === "configured" ? "ready" : "error", label: payload?.services?.groq === "configured" ? "Ready" : "No Groq key" });
-    } catch { setBackendStatus({ status: "error", label: "Offline" }); }
+    const candidates = [cleanBaseUrl(apiBaseUrl), 'http://localhost:3002', 'http://localhost:3001'];
+    const uniq = [...new Set(candidates)];
+    for (const base of uniq) {
+      try {
+        const r = await fetch(`${base}/api/v1/health/ready`, { signal: AbortSignal.timeout(3000) });
+        if (!r.ok) continue;
+        const payload = await r.json();
+        const groqReady = payload?.services?.groq === "configured";
+        setBackendStatus({ status: groqReady ? "ready" : "error", label: groqReady ? "Ready" : "No Groq key" });
+        return;
+      } catch {}
+    }
+    setBackendStatus({ status: "error", label: "Offline" });
   }, [apiBaseUrl]);
 
   const handleFile = useCallback((file) => {

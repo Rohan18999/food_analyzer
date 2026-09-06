@@ -61,6 +61,9 @@ Example: {"foods":[{"name":"Chicken Biryani","confidence":0.91},{"name":"Raita",
   if (!response.ok) {
     const text = await response.text();
     logger.error('Groq vision failed', { status: response.status, text: text.slice(0, 500) });
+    if (response.status === 401) throw new Error('Groq API key invalid or missing — set GROQ_API_KEY in backend/.env');
+    if (response.status === 404 && text.includes('model')) throw new Error(`Groq vision model "${getVisionModel()}" not found or retired — try GROQ_VISION_MODEL=meta-llama/llama-4-scout-17b-16e-instruct or meta-llama/llama-4-maverick-17b-128e-instruct`);
+    if (response.status === 429) throw new Error('Groq rate limit hit — please retry in a few seconds');
     throw new Error(`Vision request failed: ${response.status} ${text.slice(0, 300)}`);
   }
 

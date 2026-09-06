@@ -72,10 +72,22 @@ function normalizeGroqAnalysis(parsed) {
   };
 }
 
-export async function generateGroqJson({ systemPrompt, userPrompt }) {
+function getFriendlyGroqError(status, body) {
+  if (status === 401) return `Groq API key invalid or missing (401). Check GROQ_API_KEY in backend/.env`;
+  if (status === 403) return `Groq API access forbidden (403). Check API key permissions.`;
+  if (status === 404 && body?.includes('model')) return `Groq model not found (404). Model "${config.groq.model}" may be retired — try GROQ_MODEL=llama-3.3-70b-versatile or llama-3.1-8b-instant`;
+  if (status === 404) return `Groq endpoint not found (404): ${body.slice(0, 200)}`;
+  if (status === 429) return `Groq rate limit hit (429). Please retry in a few seconds.`;
+  if (status >= 500) return `Groq server error (${status}). Retry shortly.`;
+  return `Groq request failed: ${status} ${body.slice(0, 400)}`;
+}
+
+export async function generateGroqJson({ systemPrompt, userPrompt, modelOverride }) {
   if (!config.groq.apiKey) {
     throw new Error('GROQ_API_KEY is required for Groq analysis');
   }
+
+  const model = modelOverride || config.groq.model;
 
   const response = await fetch(`${config.groq.baseUrl}/chat/completions`, {
     method: 'POST',
@@ -84,7 +96,7 @@ export async function generateGroqJson({ systemPrompt, userPrompt }) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: config.groq.model,
+      model,
       temperature: 0.2,
       response_format: { type: 'json_object' },
       messages: [
@@ -96,7 +108,7 @@ export async function generateGroqJson({ systemPrompt, userPrompt }) {
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Groq request failed: ${response.status} ${errorText}`);
+    throw new Error(getFriendlyGroqError(response.status, errorText));
   }
 
   const data = await response.json();

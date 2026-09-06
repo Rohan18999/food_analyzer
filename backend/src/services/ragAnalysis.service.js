@@ -5,11 +5,12 @@ import config from '../config/env.js';
 
 /**
  * Orchestrates RAG analysis — isolated from HTTP controllers and OCR pipeline.
+ * Now resilient: throws original AppError with cause so callers can fallback.
  */
 export async function runRagAnalysis({ product, healthScore, verdict, scoreBreakdown }) {
   if (!config.groq.apiKey) {
     throw new AppError(
-      'Groq API key not configured. Set GROQ_API_KEY to enable RAG analysis.',
+      'Groq API key not configured. Set GROQ_API_KEY in backend/.env to enable AI explanations. Deterministic score is still calculated.',
       503,
       'LLM_NOT_CONFIGURED'
     );
@@ -30,12 +31,18 @@ export async function runRagAnalysis({ product, healthScore, verdict, scoreBreak
 
     return result;
   } catch (error) {
+    // Preserve AppError status/code, just enhance logging
+    if (error instanceof AppError) throw error;
+
     logger.error('RAG analysis failed', { error: error.message });
 
-    throw new AppError(
-      'Failed to generate AI health analysis',
+    const appError = new AppError(
+      error.message || 'Failed to generate AI health analysis',
       503,
       'LLM_ERROR'
     );
+    // keep original for debugging but don't expose raw provider payload to client if it contains key
+    appError.cause = error;
+    throw appError;
   }
 }

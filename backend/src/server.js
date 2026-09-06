@@ -28,6 +28,14 @@ export function startServer(app) {
       env: config.nodeEnv,
       url: `http://localhost:${config.port}`,
     });
+    if (!config.groq.apiKey) {
+      logger.warn('GROQ_API_KEY not set — AI explanations will use deterministic fallback. Set it in backend/.env');
+    } else {
+      logger.info(`Groq configured`, { model: config.groq.model, visionModel: config.groq.visionModel });
+    }
+    if (!config.mongodbUri) {
+      logger.warn('MONGODB_URI not set — RAG retrieval disabled, analyses will run without knowledge base');
+    }
   });
 
   server.on('error', (error) => {
