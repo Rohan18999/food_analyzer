@@ -700,24 +700,34 @@ export default function App() {
     ];
     const uniq = [...new Set(candidates.filter(Boolean))];
     for (const base of uniq) {
-      try {
-        const controller = new AbortController();
-        // 12s for Render cold start wake (was 4s — too short, always marked Offline)
-        const t = setTimeout(() => controller.abort(), 12000);
-        const r = await fetch(`${base}/api/v1/health/ready`, { signal: controller.signal });
-        clearTimeout(t);
-        if (!r.ok) continue;
-        const payload = await r.json();
-        const llmReady = payload?.services?.openrouter === "configured" || payload?.services?.llm === "configured" || payload?.services?.groq === "configured";
-        const ocrState = payload?.services?.ocr;
-        const label = ocrState === 'warming' ? 'Warming…' : llmReady ? "Ready" : "AI offline";
-        setBackendStatus({ status: groqReady ? "ready" : "error", label });
-        setResolvedApiUrl(base);
-        // if discovered URL differs from configured, remember it
-        if (base !== cleanBaseUrl(apiBaseUrl)) setApiBaseUrl(base);
-        return;
-      } catch (e) {
-        // continue to next candidate
+      // For Render, allow 2 retries with 20s each (cold start can be 30-50s)
+      const isRender = base.includes('onrender.com');
+      const maxRetries = isRender ? 2 : 1;
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          if (isRender && attempt > 1) {
+            setBackendStatus({ status: "", label: `Waking Render… (${attempt}/2)` });
+          }
+          const controller = new AbortController();
+          const t = setTimeout(() => controller.abort(), 20000);
+          const r = await fetch(`${base}/api/v1/health/ready`, { signal: controller.signal, cache: 'no-store' });
+          clearTimeout(t);
+          if (!r.ok) continue;
+          const payload = await r.json();
+          const llmReady = payload?.services?.openrouter === "configured" || payload?.services?.llm === "configured" || payload?.services?.groq === "configured";
+          const ocrState = payload?.services?.ocr;
+          const label = ocrState === 'warming' ? 'Warming…' : llmReady ? "Ready" : "AI offline";
+          setBackendStatus({ status: llmReady ? "ready" : "error", label });
+          setResolvedApiUrl(base);
+          if (base !== cleanBaseUrl(apiBaseUrl)) setApiBaseUrl(base);
+          return;
+        } catch (e) {
+          if (attempt < maxRetries) {
+            await new Promise((res) => setTimeout(res, 2500));
+            continue;
+          }
+          // continue to next candidate
+        }
       }
     }
     setBackendStatus({ status: "error", label: "Offline — tap ↻ to wake Render" });
