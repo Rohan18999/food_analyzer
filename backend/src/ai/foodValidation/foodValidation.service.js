@@ -132,11 +132,19 @@ Confidence: 0.9+ high certainty, 0.6-0.75 moderate, <0.6 low. Be calibrated.`;
     const isJsonValidate = text.includes('json_validate_failed') || text.includes('Failed to validate JSON') || text.includes('failed_generation');
     if (isJsonValidate) {
       logger.warn('OpenRouter vision json_object rejected, retrying without json mode', { model: visionCfg.model });
-      response = await callVision(false);
-    }
-    if (!response.ok) {
-      const errText = await response.text();
-      logger.error('OpenRouter vision validation failed', { status: response.status, text: errText.slice(0, 500) });
+      const retry = await callVision(false);
+      if (!retry.ok) {
+        const errText = await retry.text();
+        logger.error('OpenRouter vision validation failed', { status: retry.status, text: errText.slice(0, 500) });
+        if (retry.status === 401) throw new Error('OPENROUTER_API_KEY invalid');
+        if (retry.status === 429) {
+          return { isFood: true, confidence: 0.5, foodType: 'uncertain', reason: 'Rate limited — proceeding as uncertain' };
+        }
+        return { isFood: true, confidence: 0.5, foodType: 'uncertain', reason: 'Vision temporarily unavailable — proceeding as uncertain' };
+      }
+      response = retry;
+    } else {
+      logger.error('OpenRouter vision validation failed', { status: response.status, text: text.slice(0, 500) });
       if (response.status === 401) throw new Error('OPENROUTER_API_KEY invalid');
       if (response.status === 429) {
         return { isFood: true, confidence: 0.5, foodType: 'uncertain', reason: 'Rate limited — proceeding as uncertain' };

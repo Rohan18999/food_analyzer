@@ -89,15 +89,22 @@ Example: {"foods":[{"name":"Chicken Biryani","confidence":0.91},{"name":"Raita",
     const isJsonValidate = text.includes('json_validate_failed') || text.includes('Failed to validate JSON') || text.includes('failed_generation');
     if (isJsonValidate) {
       logger.warn('OpenRouter vision json_object rejected, retrying without json mode', { model: visionCfg.model });
-      response = await callVision(false);
-    }
-    if (!response.ok) {
-      const errText = await response.text();
-      logger.error('OpenRouter vision failed', { status: response.status, text: errText.slice(0, 500) });
+      const retry = await callVision(false);
+      if (!retry.ok) {
+        const errText = await retry.text();
+        logger.error('OpenRouter vision failed', { status: retry.status, text: errText.slice(0, 500) });
+        if (retry.status === 401) throw new Error('OPENROUTER_API_KEY invalid — check Render Environment / backend/.env');
+        if (retry.status === 429) throw new Error('OpenRouter rate limit hit — please retry in a few seconds');
+        if (retry.status === 404) throw new Error(`OpenRouter vision model "${visionCfg.model}" not found — set OPENROUTER_VISION_MODEL=qwen/qwen-2.5-vl-32b-instruct`);
+        throw new Error(`Vision request failed: ${retry.status} ${errText.slice(0, 300)}`);
+      }
+      response = retry;
+    } else {
+      logger.error('OpenRouter vision failed', { status: response.status, text: text.slice(0, 500) });
       if (response.status === 401) throw new Error('OPENROUTER_API_KEY invalid — check Render Environment / backend/.env');
       if (response.status === 429) throw new Error('OpenRouter rate limit hit — please retry in a few seconds');
       if (response.status === 404) throw new Error(`OpenRouter vision model "${visionCfg.model}" not found — set OPENROUTER_VISION_MODEL=qwen/qwen-2.5-vl-32b-instruct`);
-      throw new Error(`Vision request failed: ${response.status} ${errText.slice(0, 300)}`);
+      throw new Error(`Vision request failed: ${response.status} ${text.slice(0, 300)}`);
     }
   }
 

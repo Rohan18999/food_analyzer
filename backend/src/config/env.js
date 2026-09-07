@@ -27,11 +27,11 @@ const config = {
   maxFileSizeMb: parseInt(process.env.MAX_FILE_SIZE_MB || '10', 10),
   uploadDir: process.env.UPLOAD_DIR || './uploads',
 
-  // OpenRouter only — Groq removed (Option A). Nvidia for text RAG (strong JSON, free) + Qwen VL for vision (multimodal, free)
+  // OpenRouter only — Groq removed (Option A). Valid IDs 2026-09: openai/gpt-4o-mini for text (cheap JSON), qwen/qwen3-vl-32b-instruct for vision
   openrouter: {
     apiKey: process.env.OPENROUTER_API_KEY || null,
-    model: process.env.OPENROUTER_MODEL || 'nvidia/llama-3.1-nemotron-70b-instruct',
-    visionModel: process.env.OPENROUTER_VISION_MODEL || 'qwen/qwen-2.5-vl-32b-instruct',
+    model: process.env.OPENROUTER_MODEL || 'openai/gpt-4o-mini',
+    visionModel: process.env.OPENROUTER_VISION_MODEL || 'qwen/qwen3-vl-32b-instruct',
     baseUrl: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
     siteUrl: process.env.OPENROUTER_SITE_URL || 'https://foodanalyzer-five.vercel.app',
     appName: process.env.OPENROUTER_APP_NAME || 'AI Food Health Analyzer',
