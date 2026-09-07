@@ -161,9 +161,9 @@ function FallbackBanner({ reason }) {
       <Info size={16} />
       <span>
         {isMissingKey ? (
-          <><strong>AI explanation unavailable</strong> — GROQ_API_KEY not set. Deterministic score shown. Add it to <code>backend/.env</code> and restart to enable Groq insights.</>
+          <><strong>AI insights temporarily unavailable</strong> — showing deterministic score. The health score is still accurate.</>
         ) : (
-          <><strong>AI fallback active</strong> — {reason.message || 'Groq temporarily unavailable.'} Score is still accurate.</>
+          <><strong>AI insights limited</strong> — {reason.message || 'Using fast analysis.'} Score is still accurate.</>
         )}
       </span>
     </div>
@@ -708,9 +708,9 @@ export default function App() {
         clearTimeout(t);
         if (!r.ok) continue;
         const payload = await r.json();
-        const groqReady = payload?.services?.groq === "configured";
+        const llmReady = payload?.services?.openrouter === "configured" || payload?.services?.llm === "configured" || payload?.services?.groq === "configured";
         const ocrState = payload?.services?.ocr;
-        const label = ocrState === 'warming' ? 'Warming…' : groqReady ? "Ready" : "No Groq key";
+        const label = ocrState === 'warming' ? 'Warming…' : llmReady ? "Ready" : "AI offline";
         setBackendStatus({ status: groqReady ? "ready" : "error", label });
         setResolvedApiUrl(base);
         // if discovered URL differs from configured, remember it
@@ -955,7 +955,7 @@ export default function App() {
               </button>
             </div>
 
-            <div className="row-meta" style={{ fontSize: '0.78rem', marginTop: 4, opacity: 0.7 }}>API: {cleanBaseUrl(resolvedApiUrl)}</div>
+            <div className="row-meta" style={{ fontSize: '0.74rem', marginTop: 6, opacity: 0.55, letterSpacing: '0.01em' }}>Secure • Private • No tracking • Deterministic scoring</div>
             {mode === "packaged" ? (
               <form className="upload-form" onSubmit={submitAnalysis}>
                 <div className="upload-options">
@@ -1017,7 +1017,7 @@ export default function App() {
                   <p>We extract nutrition facts, check ingredient quality, calculate a deterministic score, and explain the trade-offs with evidence.</p>
                   <div style={{ display: "flex", gap: 8, marginTop: 18, flexWrap: "wrap", justifyContent: "center" }}>
                     <span className="section-badge" style={{ background: "#fff", border: "1px solid var(--line)" }}><ShieldCheck size={12} style={{ verticalAlign: "middle", marginRight: 4 }} />No score hallucination</span>
-                    <span className="section-badge" style={{ background: "#fff", border: "1px solid var(--line)" }}>OCR + Groq RAG</span>
+                    <span className="section-badge" style={{ background: "#fff", border: "1px solid var(--line)" }}>✦ AI Powered • Instant</span>
                   </div>
                 </div>
               )
@@ -1040,7 +1040,7 @@ export default function App() {
                 <div className="alternatives-list" style={{ marginTop: 18, textAlign: "left", maxWidth: 420, width: "100%" }}>
                   <div className="alternative-row" style={{ padding: "12px 14px" }}>
                     <div className="row-top" style={{ fontSize: "0.88rem" }}>How it works</div>
-                    <div className="row-meta">Photo → Recognize → Confirm portion → Deterministic nutrition → Health score → Groq explanation</div>
+                    <div className="row-meta">Photo → Recognize → Confirm portion → Health score → Personalized insights</div>
                   </div>
                 </div>
               </div>
@@ -1062,6 +1062,19 @@ export default function App() {
           </div>
         )}
       </main>
+
+      <footer className="site-footer">
+        <div className="footer-inner">
+          <div className="footer-brand">
+            <HeartPulse size={16} /> Food Health Analyzer · Honest, deterministic scoring — AI only explains
+          </div>
+          <div className="footer-links">
+            <span className="footer-meta">Live at foodanalyzer-five.vercel.app</span>
+            <span className="footer-dot">·</span>
+            <span className="footer-meta">Deterministic • No tracking • Free tier</span>
+          </div>
+        </div>
+      </footer>
     </>
   );
 }

@@ -744,6 +744,38 @@ p { margin-top: 0; }
   border: 1px solid rgba(255,255,255,0.15);
 }
 
+/* Deployment footer */
+.site-footer {
+  max-width: 1420px;
+  margin: 28px auto 0;
+  padding: 16px 24px 28px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+}
+.footer-inner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 0.82rem;
+}
+.footer-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  color: var(--ink-2);
+}
+.footer-links {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+.footer-meta { opacity: 0.8; }
+.footer-dot { opacity: 0.5; }
+
 /* Animations */
 @keyframes fadeUp {
   from { opacity: 0; transform: translateY(8px); }
