@@ -324,7 +324,7 @@ function ResultPanel({ result }) {
   );
 }
 
-function NormalFoodFlow({ apiBaseUrl, showToast }) {
+function NormalFoodFlow({ apiBaseUrl, showToast, onResult, onValidationError }) {
   const [selectedFile, setSelectedFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState("");
   const [isDragging, setIsDragging] = useState(false);
@@ -338,6 +338,10 @@ function NormalFoodFlow({ apiBaseUrl, showToast }) {
   const [validationError, setValidationError] = useState(null);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
+
+  // Lift result/validation to parent for right-pane display (desktop side-by-side)
+  useEffect(() => { if (onResult) onResult(result); }, [result, onResult]);
+  useEffect(() => { if (onValidationError) onValidationError(validationError); }, [validationError, onValidationError]);
 
   const handleFile = useCallback((file) => {
     if (!file) return;
@@ -582,12 +586,6 @@ function NormalFoodFlow({ apiBaseUrl, showToast }) {
           </div>
         </div>
       )}
-
-      {result && (
-        <div style={{ marginTop: 18 }}>
-          <ResultPanel result={result} />
-        </div>
-      )}
     </>
   );
 }
@@ -601,6 +599,8 @@ export default function App() {
   const [previewUrl, setPreviewUrl] = useState("");
   const [result, setResult] = useState(null);
   const [validationError, setValidationError] = useState(null);
+  const [normalResult, setNormalResult] = useState(null);
+  const [normalValidationError, setNormalValidationError] = useState(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisStep, setAnalysisStep] = useState(0);
@@ -798,10 +798,10 @@ export default function App() {
             </header>
 
             <div className="mode-toggle" role="tablist" aria-label="Analysis mode">
-              <button role="tab" aria-selected={mode === "packaged"} type="button" className={`mode-card ${mode === "packaged" ? "active" : ""}`} onClick={() => { setMode("packaged"); setResult(null); setValidationError(null); }}>
+              <button role="tab" aria-selected={mode === "packaged"} type="button" className={`mode-card ${mode === "packaged" ? "active" : ""}`} onClick={() => { setMode("packaged"); setResult(null); setValidationError(null); setNormalResult(null); setNormalValidationError(null); }}>
                 <Package size={16} /><span className="mode-title">Packaged</span>
               </button>
-              <button role="tab" aria-selected={mode === "normal"} type="button" className={`mode-card ${mode === "normal" ? "active" : ""}`} onClick={() => { setMode("normal"); setResult(null); setValidationError(null); }}>
+              <button role="tab" aria-selected={mode === "normal"} type="button" className={`mode-card ${mode === "normal" ? "active" : ""}`} onClick={() => { setMode("normal"); setResult(null); setValidationError(null); setNormalResult(null); setNormalValidationError(null); }}>
                 <Utensils size={16} /><span className="mode-title">Normal Food</span>
               </button>
             </div>
@@ -838,7 +838,7 @@ export default function App() {
               </form>
             ) : (
               <div className="upload-form" style={{ gap: 14 }}>
-                <NormalFoodFlow apiBaseUrl={resolvedApiUrl} showToast={showToast} />
+                <NormalFoodFlow apiBaseUrl={resolvedApiUrl} showToast={showToast} onResult={setNormalResult} onValidationError={setNormalValidationError} />
               </div>
             )}
           </div>
@@ -872,12 +872,22 @@ export default function App() {
                   </div>
                 </div>
               )
-            ) : (
+            ) : normalValidationError ? (
+              <div className="empty-state" style={{ minHeight: 380 }}>
+                <div className="empty-icon" style={{ background: normalValidationError.code==='NON_FOOD_DETECTED' ? '#fef2f2' : '#fffbeb', borderColor: normalValidationError.code==='NON_FOOD_DETECTED' ? '#fecaca' : '#fde68a' }}>
+                  {normalValidationError.code==='NON_FOOD_DETECTED' ? <AlertCircle size={28} color="#dc2626" /> : <Info size={28} color="#92400e" />}
+                </div>
+                <h2>{normalValidationError.code==='NON_FOOD_DETECTED' ? 'Not a food item' : 'Unclear image'}</h2>
+                <p>{normalValidationError.code==='NON_FOOD_DETECTED' ? 'This image does not appear to contain food. Please upload a food photo or use the packaged label scanner.' : 'This image could not be confidently identified as food. Please upload a clearer food photo.'}</p>
+                <div style={{ marginTop: 16 }}><NonFoodBanner code={normalValidationError.code} details={normalValidationError.details} /></div>
+                <button className="secondary-button" style={{ marginTop: 16 }} onClick={() => setNormalValidationError(null)}>Try another image</button>
+              </div>
+            ) : normalResult ? <ResultPanel result={normalResult} /> : (
               <div className="empty-state">
                 <div className="empty-icon"><Salad size={30} /></div>
                 <p className="eyebrow">Normal food</p>
                 <h2>Your meal story, made visual</h2>
-                <p>Recognize dishes with vision AI, adjust portions, and get an <strong>estimated</strong> nutrition breakdown plus a health score — all inline on the left. Packaged lab labels stay ultra-precise.</p>
+                <p>Recognize dishes with vision AI, adjust portions, and get an <strong>estimated</strong> nutrition breakdown plus a health score — on the right. Packaged lab labels stay ultra-precise.</p>
                 <div className="alternatives-list" style={{ marginTop: 18, textAlign: "left", maxWidth: 420, width: "100%" }}>
                   <div className="alternative-row" style={{ padding: "12px 14px" }}>
                     <div className="row-top" style={{ fontSize: "0.88rem" }}>How it works</div>

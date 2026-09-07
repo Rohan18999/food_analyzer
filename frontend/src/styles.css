@@ -753,14 +753,19 @@ p { margin-top: 0; }
 .result-content > *:nth-child(2) { animation-delay: 0.06s; }
 .result-content > *:nth-child(3) { animation-delay: 0.12s; }
 
-@media (max-width: 1080px) {
+@media (max-width: 1024px) {
   .workspace { grid-template-columns: 1fr; }
   .input-pane { position: static; max-height: none; }
   .metrics-grid { grid-template-columns: repeat(3, 1fr); }
   .topbar-inner { padding: 12px 16px; }
 }
+@media (max-width: 900px) {
+  .metrics-grid { grid-template-columns: repeat(3, 1fr); }
+}
 @media (max-width: 720px) {
-  .app-shell { padding: 14px; }
+  .app-shell { padding: 12px; }
+  .workspace { gap: 16px; }
+  .input-pane, .result-pane { padding: 16px; border-radius: 16px; }
   .pane-header, .result-hero, .section-title-row { display: grid; }
   .report-grid, .ingredient-risk-grid { grid-template-columns: 1fr; }
   .metrics-grid { grid-template-columns: 1fr 1fr; }
@@ -768,4 +773,10 @@ p { margin-top: 0; }
   .upload-options { grid-template-columns: 1fr; }
   .camera-button { flex-direction: row; min-width: auto; }
   .brand-sub { display: none; }
+  h1 { font-size: 1.45rem; }
+  .result-pane { min-height: auto; }
+}
+@media (max-width: 480px) {
+  .metrics-grid { grid-template-columns: 1fr 1fr; }
+  .upload-options { gap: 10px; }
 }
