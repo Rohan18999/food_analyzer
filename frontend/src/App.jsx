@@ -353,36 +353,84 @@ function NormalFoodFlow({ apiBaseUrl, showToast, onResult, onValidationError }) 
   }, []);
 
   const startCamera = useCallback(async () => {
+    if (!window.isSecureContext) {
+      showToast("Camera requires HTTPS — please use https://foodanalyzer-five.vercel.app");
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      showToast("Camera API not supported in this browser — please use Chrome/Safari");
+      return;
+    }
+    // Show modal immediately so video element mounts before stream attaches
+    setShowCamera(true);
+    // Small delay to let modal mount and videoRef attach
+    await new Promise((r) => setTimeout(r, 50));
     try {
       let stream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } } });
-      } catch {
-        stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      const constraintsList = [
+        { video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } } },
+        { video: { facingMode: "environment" } },
+        { video: true },
+      ];
+      let lastErr = null;
+      for (const constraints of constraintsList) {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia(constraints);
+          break;
+        } catch (e) { lastErr = e; }
       }
+      if (!stream) throw lastErr || new Error("getUserMedia failed");
       setCameraStream(stream);
-      setShowCamera(true);
+      // Attach to video if already mounted, otherwise useEffect will handle
+      if (videoRef.current) {
+        const v = videoRef.current;
+        v.srcObject = stream;
+        v.muted = true;
+        try { await v.play(); } catch {}
+      }
     } catch (err) {
-      showToast(err?.name === 'NotAllowedError' ? "Camera permission denied — please allow camera in browser settings" : "Camera not available on this device/browser");
+      setShowCamera(false);
+      if (err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError') {
+        showToast("Camera permission denied — tap the lock icon in address bar → Site settings → Allow camera, then reload");
+      } else if (err?.name === 'NotFoundError' || err?.name === 'OverconstrainedError') {
+        showToast("No camera found — please use Upload instead");
+      } else if (err?.name === 'NotReadableError') {
+        showToast("Camera is in use by another app — please close other camera apps");
+      } else {
+        showToast(`Camera error: ${err?.message || err?.name || "not available"}`);
+      }
     }
   }, [showToast]);
 
   const stopCamera = useCallback(() => {
     if (cameraStream) cameraStream.getTracks().forEach((t) => t.stop());
-    if (videoRef.current) videoRef.current.srcObject = null;
+    if (videoRef.current) {
+      try { videoRef.current.pause(); } catch {}
+      videoRef.current.srcObject = null;
+    }
     setCameraStream(null); setShowCamera(false);
   }, [cameraStream]);
 
-  // Attach stream to video after modal mounts
+  // Attach stream to video after modal mounts (handles race where stream arrives before video mounts)
   useEffect(() => {
     if (showCamera && cameraStream && videoRef.current) {
       const v = videoRef.current;
-      v.srcObject = cameraStream;
-      v.onloadedmetadata = () => v.play().catch(() => {});
-      // Fallback if metadata already loaded
-      if (v.readyState >= 1) v.play().catch(() => {});
+      if (v.srcObject !== cameraStream) v.srcObject = cameraStream;
+      v.muted = true;
+      const tryPlay = () => v.play().catch(() => {});
+      v.onloadedmetadata = tryPlay;
+      if (v.readyState >= 1) tryPlay();
+      // iOS needs explicit play after srcObject
+      setTimeout(tryPlay, 100);
     }
   }, [showCamera, cameraStream]);
+
+  // Cleanup on unmount / mode change
+  useEffect(() => {
+    return () => {
+      if (cameraStream) cameraStream.getTracks().forEach((t) => t.stop());
+    };
+  }, [cameraStream]);
 
   const capturePhoto = useCallback(() => {
     const v = videoRef.current, c = canvasRef.current;
@@ -679,34 +727,78 @@ export default function App() {
   }, []);
 
   const startCamera = useCallback(async () => {
+    if (!window.isSecureContext) {
+      showToast("Camera requires HTTPS — please use https://foodanalyzer-five.vercel.app");
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      showToast("Camera API not supported in this browser — please use Chrome/Safari");
+      return;
+    }
+    setShowCamera(true);
+    await new Promise((r) => setTimeout(r, 50));
     try {
-      let s;
-      try {
-        s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } } });
-      } catch {
-        s = await navigator.mediaDevices.getUserMedia({ video: true });
+      let stream;
+      const constraintsList = [
+        { video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } } },
+        { video: { facingMode: "environment" } },
+        { video: true },
+      ];
+      let lastErr = null;
+      for (const constraints of constraintsList) {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia(constraints);
+          break;
+        } catch (e) { lastErr = e; }
       }
-      setCameraStream(s);
-      setShowCamera(true);
+      if (!stream) throw lastErr || new Error("getUserMedia failed");
+      setCameraStream(stream);
+      if (videoRef.current) {
+        const v = videoRef.current;
+        v.srcObject = stream;
+        v.muted = true;
+        try { await v.play(); } catch {}
+      }
     } catch (err) {
-      showToast(err?.name === 'NotAllowedError' ? "Camera permission denied — please allow camera in browser settings" : "Camera not available on this device/browser");
+      setShowCamera(false);
+      if (err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError') {
+        showToast("Camera permission denied — tap the lock icon in address bar → Site settings → Allow camera, then reload");
+      } else if (err?.name === 'NotFoundError' || err?.name === 'OverconstrainedError') {
+        showToast("No camera found — please use Upload instead");
+      } else if (err?.name === 'NotReadableError') {
+        showToast("Camera is in use by another app — please close other camera apps");
+      } else {
+        showToast(`Camera error: ${err?.message || err?.name || "not available"}`);
+      }
     }
   }, [showToast]);
 
   const stopCamera = useCallback(() => {
     if (cameraStream) cameraStream.getTracks().forEach((t) => t.stop());
-    if (videoRef.current) videoRef.current.srcObject = null;
+    if (videoRef.current) {
+      try { videoRef.current.pause(); } catch {}
+      videoRef.current.srcObject = null;
+    }
     setCameraStream(null); setShowCamera(false);
   }, [cameraStream]);
 
   useEffect(() => {
     if (showCamera && cameraStream && videoRef.current) {
       const v = videoRef.current;
-      v.srcObject = cameraStream;
-      v.onloadedmetadata = () => v.play().catch(() => {});
-      if (v.readyState >= 1) v.play().catch(() => {});
+      if (v.srcObject !== cameraStream) v.srcObject = cameraStream;
+      v.muted = true;
+      const tryPlay = () => v.play().catch(() => {});
+      v.onloadedmetadata = tryPlay;
+      if (v.readyState >= 1) tryPlay();
+      setTimeout(tryPlay, 100);
     }
   }, [showCamera, cameraStream]);
+
+  useEffect(() => {
+    return () => {
+      if (cameraStream) cameraStream.getTracks().forEach((t) => t.stop());
+    };
+  }, [cameraStream]);
 
   const capturePhoto = useCallback(() => {
     const v = videoRef.current, c = canvasRef.current;
