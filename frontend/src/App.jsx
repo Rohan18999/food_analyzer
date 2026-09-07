@@ -403,13 +403,16 @@ function NormalFoodFlow({ apiBaseUrl, showToast, onResult, onValidationError }) 
   }, [showToast]);
 
   const stopCamera = useCallback(() => {
-    if (cameraStream) cameraStream.getTracks().forEach((t) => t.stop());
+    setCameraStream((prev) => {
+      if (prev) prev.getTracks().forEach((t) => t.stop());
+      return null;
+    });
     if (videoRef.current) {
       try { videoRef.current.pause(); } catch {}
       videoRef.current.srcObject = null;
     }
-    setCameraStream(null); setShowCamera(false);
-  }, [cameraStream]);
+    setShowCamera(false);
+  }, []);
 
   // Attach stream to video after modal mounts (handles race where stream arrives before video mounts)
   useEffect(() => {
@@ -420,17 +423,19 @@ function NormalFoodFlow({ apiBaseUrl, showToast, onResult, onValidationError }) 
       const tryPlay = () => v.play().catch(() => {});
       v.onloadedmetadata = tryPlay;
       if (v.readyState >= 1) tryPlay();
-      // iOS needs explicit play after srcObject
       setTimeout(tryPlay, 100);
     }
   }, [showCamera, cameraStream]);
 
-  // Cleanup on unmount / mode change
+  // Cleanup on unmount only (stable stopCamera avoids premature close)
   useEffect(() => {
     return () => {
-      if (cameraStream) cameraStream.getTracks().forEach((t) => t.stop());
+      setCameraStream((prev) => {
+        if (prev) prev.getTracks().forEach((t) => t.stop());
+        return null;
+      });
     };
-  }, [cameraStream]);
+  }, []);
 
   const capturePhoto = useCallback(() => {
     const v = videoRef.current, c = canvasRef.current;
@@ -774,13 +779,16 @@ export default function App() {
   }, [showToast]);
 
   const stopCamera = useCallback(() => {
-    if (cameraStream) cameraStream.getTracks().forEach((t) => t.stop());
+    setCameraStream((prev) => {
+      if (prev) prev.getTracks().forEach((t) => t.stop());
+      return null;
+    });
     if (videoRef.current) {
       try { videoRef.current.pause(); } catch {}
       videoRef.current.srcObject = null;
     }
-    setCameraStream(null); setShowCamera(false);
-  }, [cameraStream]);
+    setShowCamera(false);
+  }, []);
 
   useEffect(() => {
     if (showCamera && cameraStream && videoRef.current) {
@@ -796,9 +804,12 @@ export default function App() {
 
   useEffect(() => {
     return () => {
-      if (cameraStream) cameraStream.getTracks().forEach((t) => t.stop());
+      setCameraStream((prev) => {
+        if (prev) prev.getTracks().forEach((t) => t.stop());
+        return null;
+      });
     };
-  }, [cameraStream]);
+  }, []);
 
   const capturePhoto = useCallback(() => {
     const v = videoRef.current, c = canvasRef.current;
