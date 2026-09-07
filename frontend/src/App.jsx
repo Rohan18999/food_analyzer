@@ -354,27 +354,51 @@ function NormalFoodFlow({ apiBaseUrl, showToast, onResult, onValidationError }) 
 
   const startCamera = useCallback(async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-      setCameraStream(stream); setShowCamera(true);
-      if (videoRef.current) { videoRef.current.srcObject = stream; videoRef.current.play(); }
-    } catch { showToast("Camera access denied or not available"); }
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } } });
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      }
+      setCameraStream(stream);
+      setShowCamera(true);
+    } catch (err) {
+      showToast(err?.name === 'NotAllowedError' ? "Camera permission denied — please allow camera in browser settings" : "Camera not available on this device/browser");
+    }
   }, [showToast]);
 
   const stopCamera = useCallback(() => {
     if (cameraStream) cameraStream.getTracks().forEach((t) => t.stop());
+    if (videoRef.current) videoRef.current.srcObject = null;
     setCameraStream(null); setShowCamera(false);
   }, [cameraStream]);
 
-  const capturePhoto = useCallback(() => {
-    if (videoRef.current && canvasRef.current) {
-      const v = videoRef.current, c = canvasRef.current;
-      c.width = v.videoWidth; c.height = v.videoHeight;
-      c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
-      c.toBlob((blob) => {
-        if (blob) { const file = new File([blob], "camera-photo.jpg", { type: "image/jpeg" }); handleFile(file); stopCamera(); }
-      }, "image/jpeg", 0.95);
+  // Attach stream to video after modal mounts
+  useEffect(() => {
+    if (showCamera && cameraStream && videoRef.current) {
+      const v = videoRef.current;
+      v.srcObject = cameraStream;
+      v.onloadedmetadata = () => v.play().catch(() => {});
+      // Fallback if metadata already loaded
+      if (v.readyState >= 1) v.play().catch(() => {});
     }
-  }, [handleFile, stopCamera]);
+  }, [showCamera, cameraStream]);
+
+  const capturePhoto = useCallback(() => {
+    const v = videoRef.current, c = canvasRef.current;
+    if (!v || !c) { showToast("Camera not ready"); return; }
+    if (!v.videoWidth || !v.videoHeight) { showToast("Camera still loading — please wait a second"); return; }
+    c.width = v.videoWidth; c.height = v.videoHeight;
+    const ctx = c.getContext("2d");
+    if (!ctx) { showToast("Could not capture photo"); return; }
+    ctx.drawImage(v, 0, 0, c.width, c.height);
+    c.toBlob((blob) => {
+      if (!blob) { showToast("Failed to capture photo"); return; }
+      const file = new File([blob], "camera-photo.jpg", { type: "image/jpeg" });
+      handleFile(file);
+      stopCamera();
+    }, "image/jpeg", 0.92);
+  }, [handleFile, stopCamera, showToast]);
 
   useEffect(() => () => { if (previewUrl) URL.revokeObjectURL(previewUrl); }, [previewUrl]);
   useEffect(() => () => { stopCamera(); }, [stopCamera]);
@@ -656,27 +680,49 @@ export default function App() {
 
   const startCamera = useCallback(async () => {
     try {
-      const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-      setCameraStream(s); setShowCamera(true);
-      if (videoRef.current) { videoRef.current.srcObject = s; videoRef.current.play(); }
-    } catch { showToast("Camera access denied or not available"); }
+      let s;
+      try {
+        s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } } });
+      } catch {
+        s = await navigator.mediaDevices.getUserMedia({ video: true });
+      }
+      setCameraStream(s);
+      setShowCamera(true);
+    } catch (err) {
+      showToast(err?.name === 'NotAllowedError' ? "Camera permission denied — please allow camera in browser settings" : "Camera not available on this device/browser");
+    }
   }, [showToast]);
 
   const stopCamera = useCallback(() => {
     if (cameraStream) cameraStream.getTracks().forEach((t) => t.stop());
+    if (videoRef.current) videoRef.current.srcObject = null;
     setCameraStream(null); setShowCamera(false);
   }, [cameraStream]);
 
-  const capturePhoto = useCallback(() => {
-    if (videoRef.current && canvasRef.current) {
-      const v = videoRef.current, c = canvasRef.current;
-      c.width = v.videoWidth; c.height = v.videoHeight;
-      c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
-      c.toBlob((blob) => {
-        if (blob) { const file = new File([blob], "camera-photo.jpg", { type: "image/jpeg" }); handleFile(file); stopCamera(); }
-      }, "image/jpeg", 0.95);
+  useEffect(() => {
+    if (showCamera && cameraStream && videoRef.current) {
+      const v = videoRef.current;
+      v.srcObject = cameraStream;
+      v.onloadedmetadata = () => v.play().catch(() => {});
+      if (v.readyState >= 1) v.play().catch(() => {});
     }
-  }, [handleFile, stopCamera]);
+  }, [showCamera, cameraStream]);
+
+  const capturePhoto = useCallback(() => {
+    const v = videoRef.current, c = canvasRef.current;
+    if (!v || !c) { showToast("Camera not ready"); return; }
+    if (!v.videoWidth || !v.videoHeight) { showToast("Camera still loading — please wait a second"); return; }
+    c.width = v.videoWidth; c.height = v.videoHeight;
+    const ctx = c.getContext("2d");
+    if (!ctx) { showToast("Could not capture photo"); return; }
+    ctx.drawImage(v, 0, 0, c.width, c.height);
+    c.toBlob((blob) => {
+      if (!blob) { showToast("Failed to capture photo"); return; }
+      const file = new File([blob], "camera-photo.jpg", { type: "image/jpeg" });
+      handleFile(file);
+      stopCamera();
+    }, "image/jpeg", 0.92);
+  }, [handleFile, stopCamera, showToast]);
 
   useEffect(() => () => stopCamera(), [stopCamera]);
 
