@@ -66,7 +66,9 @@ export function startServer(app) {
       logger.info(`OpenRouter configured`, { model: config.openrouter.model, visionModel: config.openrouter.visionModel });
     }
     if (!config.mongodbUri) {
-      logger.warn('MONGODB_URI not set — RAG retrieval disabled, analyses will run without knowledge base');
+      logger.info('MONGODB_URI not set — running without RAG knowledge base (optional). Analyses use deterministic scoring + LLM without retrieval.');
+    } else {
+      logger.info('MongoDB configured — RAG retrieval enabled');
     }
     // Warm tesseract in background — avoids 5-15s cold-start penalty on first analysis request (critical for Render free tier)
     setTimeout(() => {

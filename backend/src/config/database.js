@@ -3,7 +3,7 @@ import config from './env.js';
 
 export async function connectDatabase() {
   if (!config.mongodbUri) {
-    console.warn('[db] MONGODB_URI not set — running without database persistence (set MONGODB_URI in Render to enable RAG)');
+    console.log('[db] MONGODB_URI not set — running without RAG knowledge base (optional). Set MONGODB_URI in Render to enable retrieval.');
     return null;
   }
 
